@@ -28,10 +28,12 @@ type servicePrincipal struct {
 	Permissions []string `json:"permissions"`
 }
 
-const (
-	serviceContextKey contextKey = "service"
-	serviceGroup                 = "BSYSTEM-Services"
-)
+const serviceContextKey contextKey = "service"
+
+// serviceGroup is the authentik group a token must be in to reach the machine
+// API. It is deliberately a plain string: grouping it with a contextKey
+// constant made it a contextKey too, which it is not.
+const serviceGroup = "BSYSTEM-Services"
 
 var adapterRegistry = adapters.NewRegistry()
 

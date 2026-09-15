@@ -57,6 +57,15 @@ jobs:
       - name: Test and compile
         run: go test -race ./...
 
+      # Run on every build rather than only in the security workflow, so a
+      # vulnerable dependency cannot be merged while waiting for a scheduled
+      # scan.
+      - name: Check for reachable vulnerabilities
+        run: go run golang.org/x/vuln/cmd/govulncheck@latest ./...
+
+      - name: Static analysis
+        run: go run honnef.co/go/tools/cmd/staticcheck@latest ./...
+
   openapi:
     name: OpenAPI contract
     runs-on: ubuntu-latest

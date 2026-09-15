@@ -137,8 +137,10 @@ func TestHalfOpenRequiresEveryProbeToSucceed(t *testing.T) {
 	breaker.Fail(true)
 	clock.Advance(time.Minute)
 
-	if !breaker.Allow() || !breaker.Allow() {
-		t.Fatal("half-open must admit both configured probes")
+	for probe := 1; probe <= 2; probe++ {
+		if !breaker.Allow() {
+			t.Fatalf("half-open must admit probe %d of the two configured", probe)
+		}
 	}
 	if breaker.Allow() {
 		t.Fatal("half-open must not admit a third probe")

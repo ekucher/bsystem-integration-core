@@ -63,6 +63,9 @@ const (
 func New(config adapters.Config) (*Client, error) {
 	key := strings.TrimSpace(config.APIKey)
 	if key == "" {
+		// lint:ignore ST1005 "Outline" is a proper noun, which Go's error
+		// string convention explicitly permits at the start of a message.
+		//lint:ignore ST1005 proper noun
 		return nil, errors.New("Outline API key is required")
 	}
 	client, err := httpx.New(httpx.OptionsFor("outline", config))

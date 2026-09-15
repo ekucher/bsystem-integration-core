@@ -300,11 +300,16 @@ func TestRetryAfterIsHonouredAndBounded(t *testing.T) {
 			}))
 			defer server.Close()
 
-			client, recorder := newClient(t, server.URL, func(o *Options) {
-				o.Retry = RetryPolicy{MaxAttempts: 2, BaseDelay: 10 * time.Millisecond, MaxDelay: 2 * time.Second, jitter: func(d time.Duration) time.Duration { return d }}
+			recorder := &recordedSleep{}
+			client, _ := newClient(t, server.URL, func(o *Options) {
+				o.Retry = RetryPolicy{
+					MaxAttempts: 2,
+					BaseDelay:   10 * time.Millisecond,
+					MaxDelay:    2 * time.Second,
+					sleep:       recorder.sleep,
+					jitter:      func(d time.Duration) time.Duration { return d },
+				}
 			})
-			recorder = &recordedSleep{}
-			client.retry.sleep = recorder.sleep
 
 			_ = client.Do(context.Background(), Request{Method: http.MethodGet, Path: "/x", Idempotent: true}, nil)
 			if len(recorder.delays) != 1 {
