@@ -19,6 +19,7 @@ type servicePrincipal struct {
 	Name        string   `json:"name"`
 	Username    string   `json:"username"`
 	Groups      []string `json:"groups"`
+	Roles       []string `json:"roles"`
 	Permissions []string `json:"permissions"`
 }
 
@@ -86,11 +87,12 @@ func (a *app) authenticateService(next http.Handler) http.Handler {
 			name = username
 		}
 
+		groups := unique(info.Groups)
 		globalID, created, err := a.db.EnsureServiceIdentity(r.Context(), platformdb.ServiceIdentity{
 			Subject: info.Sub,
 			Name: name,
 			Username: username,
-			Groups: unique(info.Groups),
+			Groups: groups,
 		})
 		if err != nil {
 			log.Printf("service identity persistence failed: %v", err)
@@ -101,13 +103,21 @@ func (a *app) authenticateService(next http.Handler) http.Handler {
 			a.publish("service_identity.created", map[string]any{"global_service_id": globalID, "subject": info.Sub})
 		}
 
+		profile, err := a.db.ResolveAccess(r.Context(), groups, "service")
+		if err != nil {
+			log.Printf("service RBAC resolution failed: %v", err)
+			writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "RBAC store unavailable"})
+			return
+		}
+
 		principal := servicePrincipal{
 			ID:          globalID,
 			Subject:     info.Sub,
 			Name:        name,
 			Username:    username,
-			Groups:      unique(info.Groups),
-			Permissions: []string{"adapters.read", "events.publish", "global_ids.read"},
+			Groups:      groups,
+			Roles:       profile.Roles,
+			Permissions: profile.Permissions,
 		}
 		ctx := context.WithValue(r.Context(), serviceContextKey, principal)
 		next.ServeHTTP(w, r.WithContext(ctx))
@@ -124,10 +134,20 @@ func (a *app) serviceWhoAmI(w http.ResponseWriter, r *http.Request) {
 }
 
 func (a *app) serviceAdapters(w http.ResponseWriter, r *http.Request) {
+	principal := serviceFrom(r.Context())
+	if !serviceHasPermission(principal, "adapters.read") {
+		writeJSON(w, http.StatusForbidden, map[string]string{"error": "adapters.read permission required"})
+		return
+	}
 	writeJSON(w, http.StatusOK, adapterRegistry.List())
 }
 
 func (a *app) serviceAdapterHealth(w http.ResponseWriter, r *http.Request) {
+	principal := serviceFrom(r.Context())
+	if !serviceHasPermission(principal, "adapters.read") {
+		writeJSON(w, http.StatusForbidden, map[string]string{"error": "adapters.read permission required"})
+		return
+	}
 	writeJSON(w, http.StatusOK, adapterRegistry.Health(r.Context()))
 }
 
