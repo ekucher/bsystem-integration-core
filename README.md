@@ -1,56 +1,90 @@
 # BSYSTEM Integration Core
 
-Integration and orchestration backbone of the BSYSTEM Platform.
+Integration, authorization-aware data access and event backbone of the BSYSTEM Platform.
 
-## Purpose
+## Responsibilities
 
-BSYSTEM Integration Core connects BSYSTEM-HUB, AI services and domain systems without creating direct database coupling between them.
+- normalized API façade for domain services;
+- authentik-backed human and service identity handling;
+- persistent RBAC and resource scopes;
+- Global ID allocation and source mappings;
+- immutable audit metadata;
+- normalized event ingestion and NATS publishing;
+- adapter registry and health aggregation;
+- permission-aware data access for future BSYSTEM AI.
 
-Primary responsibilities:
+Source systems remain authoritative. Integration Core stores platform metadata and mappings, not full shadow databases of CRM, Redmine or Wiki.
 
-- API gateway / façade for platform services;
-- entity mapping and global IDs;
-- event ingestion and routing;
-- webhooks and adapters;
-- notification routing;
-- search indexing;
-- audit event collection;
-- synchronization workers;
-- service registry and health aggregation;
-- permission-aware data access for BSYSTEM AI.
+## Current adapters
 
-## Connected systems
+```text
+EspoCRM -> Clients / Contacts -> CL-* / CT-*
+Redmine -> Projects / Issues  -> PR-* / TSK-*
+Outline -> Documents          -> DOC-*
+```
 
-- authentik
-- EspoCRM
-- Redmine
-- BSYSTEM QA
-- BSYSTEM Development
-- Outline
-- BSYSTEM Operations
-- BSYSTEM Support
-- BSYSTEM AI
+Adapters are enabled through environment configuration. Unconfigured adapters remain registered as disabled.
 
-## Architectural rules
+## Human API
 
-- No direct cross-module database queries.
-- Source systems remain authoritative for their domain data.
-- Integration Core stores mappings and integration state, not full copies of source systems.
-- External and internal APIs are versioned.
-- Events use stable names such as `entity.action`.
-- Every request/event should carry correlation metadata.
+```text
+GET  /api/v1/me
+GET  /api/v1/modules
+GET  /api/v1/clients
+GET  /api/v1/contacts
+GET  /api/v1/projects
+GET  /api/v1/issues
+GET  /api/v1/documents
+POST /api/v1/global-ids
+GET  /api/v1/global-ids/{id}
+GET  /api/v1/audit
+```
 
-## Initial P0 scope
+Administrative RBAC API:
 
-- `/health`
-- `/api/v1/modules`
-- `/api/v1/me` support path
-- module/service registry
-- global ID mapping skeleton
-- structured audit events
-- authentik service authentication
-- PostgreSQL persistence
-- Redis/cache where needed
-- NATS-ready event abstraction
+```text
+GET    /api/v1/admin/rbac/roles
+GET    /api/v1/admin/rbac/scopes
+POST   /api/v1/admin/rbac/scopes
+DELETE /api/v1/admin/rbac/scopes
+```
 
-See [Architecture](docs/ARCHITECTURE.md) and [Roadmap](docs/ROADMAP.md).
+## Service API
+
+```text
+GET  /api/service/v1/whoami
+GET  /api/service/v1/adapters
+GET  /api/service/v1/adapters/health
+POST /api/service/v1/events
+```
+
+Service identities use `SVC-*` Global IDs and a separate service-role mapping.
+
+## Operations
+
+```text
+GET /health
+GET /readyz
+GET /metrics
+```
+
+PostgreSQL is required for readiness. NATS is allowed to degrade synchronous reads but its state is surfaced in health/metrics.
+
+## Security boundaries
+
+- authentik proves identity; Integration Core resolves effective authorization;
+- browser UI visibility is not authorization enforcement;
+- raw upstream errors are not returned to clients;
+- customer-facing data must be tenant/scope filtered before exposure;
+- the internal Outline document listing rejects Customer access until tenant-aware document scopes exist;
+- secrets/tokens/API keys must never enter audit/event payloads;
+- BSYSTEM AI must consume authorized Integration Core context rather than upstream databases directly.
+
+## Documentation
+
+- [Architecture](docs/ARCHITECTURE.md)
+- [API](docs/API.md)
+- [Adapters](docs/ADAPTERS.md)
+- [Operations](docs/OPERATIONS.md)
+- [AI Gateway Contract](docs/AI-GATEWAY-CONTRACT.md)
+- [P0.4 Persistent RBAC & Scopes](docs/P0.4-PERSISTENT-RBAC-SCOPES.md)
