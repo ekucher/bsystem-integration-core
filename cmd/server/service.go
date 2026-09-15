@@ -2,11 +2,14 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"log"
 	"net/http"
 	"strings"
+	"time"
 
 	"github.com/ekucher/bsystem-integration-core/internal/adapters"
+	"github.com/ekucher/bsystem-integration-core/internal/events"
 	"github.com/ekucher/bsystem-integration-core/internal/platformdb"
 )
 
@@ -40,6 +43,15 @@ func init() {
 func hasString(values []string, expected string) bool {
 	for _, value := range values {
 		if value == expected {
+			return true
+		}
+	}
+	return false
+}
+
+func serviceHasPermission(principal servicePrincipal, permission string) bool {
+	for _, value := range principal.Permissions {
+		if value == permission || value == "*" {
 			return true
 		}
 	}
@@ -90,11 +102,11 @@ func (a *app) authenticateService(next http.Handler) http.Handler {
 		}
 
 		principal := servicePrincipal{
-			ID: globalID,
-			Subject: info.Sub,
-			Name: name,
-			Username: username,
-			Groups: unique(info.Groups),
+			ID:          globalID,
+			Subject:     info.Sub,
+			Name:        name,
+			Username:    username,
+			Groups:      unique(info.Groups),
 			Permissions: []string{"adapters.read", "events.publish", "global_ids.read"},
 		}
 		ctx := context.WithValue(r.Context(), serviceContextKey, principal)
@@ -119,10 +131,40 @@ func (a *app) serviceAdapterHealth(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, adapterRegistry.Health(r.Context()))
 }
 
+func (a *app) servicePublishEvent(w http.ResponseWriter, r *http.Request) {
+	principal := serviceFrom(r.Context())
+	if !serviceHasPermission(principal, "events.publish") {
+		writeJSON(w, http.StatusForbidden, map[string]string{"error": "events.publish permission required"})
+		return
+	}
+	var envelope events.Envelope
+	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<20)).Decode(&envelope); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid JSON body"})
+		return
+	}
+	if envelope.ActorID == "" {
+		envelope.ActorID = principal.ID
+	}
+	if envelope.RequestID == "" {
+		envelope.RequestID = requestIDFrom(r.Context())
+	}
+	if err := envelope.Normalize(time.Now()); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+		return
+	}
+	if a.nc == nil || !a.nc.IsConnected() {
+		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "event bus unavailable"})
+		return
+	}
+	a.publish(events.Subject(envelope.Event), envelope)
+	writeJSON(w, http.StatusAccepted, envelope)
+}
+
 func registerServiceRoutes(root *http.ServeMux, a *app) {
 	serviceMux := http.NewServeMux()
 	serviceMux.HandleFunc("GET /api/service/v1/whoami", a.serviceWhoAmI)
 	serviceMux.HandleFunc("GET /api/service/v1/adapters", a.serviceAdapters)
 	serviceMux.HandleFunc("GET /api/service/v1/adapters/health", a.serviceAdapterHealth)
+	serviceMux.HandleFunc("POST /api/service/v1/events", a.servicePublishEvent)
 	root.Handle("/api/service/", a.authenticateService(serviceMux))
 }
