@@ -12,6 +12,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/ekucher/bsystem-integration-core/internal/authz"
 	"github.com/ekucher/bsystem-integration-core/internal/platformdb"
 	"github.com/nats-io/nats.go"
 )
@@ -55,14 +56,80 @@ type globalIDRequest struct {
 type contextKey string
 
 const (
-	userContextKey       contextKey = "user"
-	globalUserContextKey contextKey = "global-user-id"
-	requestIDContextKey  contextKey = "request-id"
+	// userContextKey holds the resolved meResponse for a human caller.
+	userContextKey contextKey = "user"
+	// principalContextKey holds the authorization principal, whether the
+	// caller is a human or a service identity.
+	principalContextKey contextKey = "principal"
+	requestIDContextKey contextKey = "request-id"
 )
 
 type app struct {
-	db *platformdb.DB
-	nc *nats.Conn
+	db    *platformdb.DB
+	nc    *nats.Conn
+	authz *authz.Evaluator
+}
+
+// accessFrom returns the resolved access of the human caller.
+func accessFrom(ctx context.Context) meResponse {
+	access, _ := ctx.Value(userContextKey).(meResponse)
+	return access
+}
+
+// principalFrom returns the authorization principal of the caller.
+func principalFrom(ctx context.Context) authz.Principal {
+	principal, _ := ctx.Value(principalContextKey).(authz.Principal)
+	return principal
+}
+
+// writeDenied renders an authorization denial. The decision's reason names the
+// missing permission and nothing else, so a denial never reveals whether the
+// resource exists or who owns it.
+func writeDenied(w http.ResponseWriter, decision authz.Decision) {
+	body := map[string]string{"error": decision.Reason}
+	if decision.Code != "" {
+		body["code"] = decision.Code
+	}
+	writeJSON(w, http.StatusForbidden, body)
+}
+
+// authorize enforces a route's declared permission across the whole platform,
+// before the handler runs.
+//
+// Routes that address a single resource declare a scope type instead, and
+// evaluate in the handler once they know which resource was addressed; see
+// authorizeResource.
+func (a *app) authorize(permission string, next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		decision, err := a.authz.Evaluate(r.Context(), principalFrom(r.Context()), permission, authz.Global())
+		if err != nil {
+			log.Printf("authorization evaluation failed: %v", err)
+			writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "authorization store unavailable"})
+			return
+		}
+		if !decision.Allowed {
+			writeDenied(w, decision)
+			return
+		}
+		next.ServeHTTP(w, r)
+	})
+}
+
+// authorizeResource evaluates a route's permission against one resolved
+// resource. It reports whether the caller may proceed, having already written
+// the denial when they may not.
+func (a *app) authorizeResource(w http.ResponseWriter, r *http.Request, permission, scopeType, scopeID string) bool {
+	decision, err := a.authz.Evaluate(r.Context(), principalFrom(r.Context()), permission, authz.Resource(scopeType, scopeID))
+	if err != nil {
+		log.Printf("authorization evaluation failed: %v", err)
+		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "authorization store unavailable"})
+		return false
+	}
+	if !decision.Allowed {
+		writeDenied(w, decision)
+		return false
+	}
+	return true
 }
 
 func writeJSON(w http.ResponseWriter, status int, v any) {
@@ -141,8 +208,18 @@ func (a *app) authenticate(next http.Handler) http.Handler {
 		if created {
 			a.publish("identity.created", map[string]any{"global_user_id": globalUserID, "subject": info.Sub})
 		}
-		ctx := context.WithValue(r.Context(), userContextKey, info)
-		ctx = context.WithValue(ctx, globalUserContextKey, globalUserID)
+		// Access is resolved once per request rather than per handler, so a
+		// single request cannot observe two different authorization states.
+		access, err := a.resolveAccess(r.Context(), info, globalUserID)
+		if err != nil {
+			log.Printf("RBAC resolution failed: %v", err)
+			writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "RBAC store unavailable"})
+			return
+		}
+		ctx := context.WithValue(r.Context(), userContextKey, access)
+		ctx = context.WithValue(ctx, principalContextKey, authz.Principal{
+			ID: access.ID, Kind: authz.KindUser, Roles: access.Roles, Permissions: access.Permissions,
+		})
 		next.ServeHTTP(w, r.WithContext(ctx))
 	})
 }
@@ -179,15 +256,6 @@ func (a *app) resolveAccess(ctx context.Context, info userInfo, globalUserID str
 		Permissions: profile.Permissions,
 		Modules:     profile.Modules,
 	}, nil
-}
-
-func hasPermission(access meResponse, permission string) bool {
-	for _, p := range access.Permissions {
-		if p == "*" || p == permission {
-			return true
-		}
-	}
-	return false
 }
 
 func requestIDFrom(ctx context.Context) string {
@@ -247,24 +315,11 @@ func (a *app) health(w http.ResponseWriter, r *http.Request) {
 }
 
 func (a *app) me(w http.ResponseWriter, r *http.Request) {
-	info := r.Context().Value(userContextKey).(userInfo)
-	globalUserID := r.Context().Value(globalUserContextKey).(string)
-	access, err := a.resolveAccess(r.Context(), info, globalUserID)
-	if err != nil {
-		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "RBAC store unavailable"})
-		return
-	}
-	writeJSON(w, http.StatusOK, access)
+	writeJSON(w, http.StatusOK, accessFrom(r.Context()))
 }
 
 func (a *app) modules(w http.ResponseWriter, r *http.Request) {
-	info := r.Context().Value(userContextKey).(userInfo)
-	globalUserID := r.Context().Value(globalUserContextKey).(string)
-	access, err := a.resolveAccess(r.Context(), info, globalUserID)
-	if err != nil {
-		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "RBAC store unavailable"})
-		return
-	}
+	access := accessFrom(r.Context())
 	allowed := map[string]bool{}
 	for _, id := range access.Modules {
 		allowed[id] = true
@@ -284,17 +339,7 @@ func (a *app) modules(w http.ResponseWriter, r *http.Request) {
 }
 
 func (a *app) createGlobalID(w http.ResponseWriter, r *http.Request) {
-	info := r.Context().Value(userContextKey).(userInfo)
-	globalUserID := r.Context().Value(globalUserContextKey).(string)
-	access, err := a.resolveAccess(r.Context(), info, globalUserID)
-	if err != nil {
-		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "RBAC store unavailable"})
-		return
-	}
-	if !hasPermission(access, "*") {
-		writeJSON(w, http.StatusForbidden, map[string]string{"error": "administrator permission required"})
-		return
-	}
+	access := accessFrom(r.Context())
 	var input globalIDRequest
 	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<20)).Decode(&input); err != nil {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid JSON body"})
@@ -318,17 +363,7 @@ func (a *app) createGlobalID(w http.ResponseWriter, r *http.Request) {
 }
 
 func (a *app) resolveGlobalID(w http.ResponseWriter, r *http.Request) {
-	info := r.Context().Value(userContextKey).(userInfo)
-	globalUserID := r.Context().Value(globalUserContextKey).(string)
-	access, err := a.resolveAccess(r.Context(), info, globalUserID)
-	if err != nil {
-		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "RBAC store unavailable"})
-		return
-	}
-	if !hasPermission(access, "*") {
-		writeJSON(w, http.StatusForbidden, map[string]string{"error": "administrator permission required"})
-		return
-	}
+	access := accessFrom(r.Context())
 	id := strings.TrimSpace(r.PathValue("id"))
 	if id == "" {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "Global ID is required"})
@@ -344,17 +379,6 @@ func (a *app) resolveGlobalID(w http.ResponseWriter, r *http.Request) {
 }
 
 func (a *app) auditEvents(w http.ResponseWriter, r *http.Request) {
-	info := r.Context().Value(userContextKey).(userInfo)
-	globalUserID := r.Context().Value(globalUserContextKey).(string)
-	access, err := a.resolveAccess(r.Context(), info, globalUserID)
-	if err != nil {
-		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "RBAC store unavailable"})
-		return
-	}
-	if !hasPermission(access, "*") {
-		writeJSON(w, http.StatusForbidden, map[string]string{"error": "administrator permission required"})
-		return
-	}
 	limit, _ := strconv.Atoi(r.URL.Query().Get("limit"))
 	events, err := a.db.ListAudit(r.Context(), limit)
 	if err != nil {
@@ -383,7 +407,7 @@ func main() {
 			defer nc.Close()
 		}
 	}
-	a := &app{db: db, nc: nc}
+	a := &app{db: db, nc: nc, authz: authz.New(db, authz.DefaultConfinedRoles())}
 
 	addr := os.Getenv("HTTP_ADDR")
 	if addr == "" {

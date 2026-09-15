@@ -8,22 +8,7 @@ import (
 	"github.com/ekucher/bsystem-integration-core/internal/platformdb"
 )
 
-func (a *app) requireAdministrator(r *http.Request) (meResponse, error) {
-	info := r.Context().Value(userContextKey).(userInfo)
-	globalUserID := r.Context().Value(globalUserContextKey).(string)
-	return a.resolveAccess(r.Context(), info, globalUserID)
-}
-
 func (a *app) adminRoles(w http.ResponseWriter, r *http.Request) {
-	access, err := a.requireAdministrator(r)
-	if err != nil {
-		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "RBAC store unavailable"})
-		return
-	}
-	if !hasPermission(access, "*") {
-		writeJSON(w, http.StatusForbidden, map[string]string{"error": "administrator permission required"})
-		return
-	}
 	roles, err := a.db.ListRoles(r.Context())
 	if err != nil {
 		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "RBAC catalog unavailable"})
@@ -33,15 +18,6 @@ func (a *app) adminRoles(w http.ResponseWriter, r *http.Request) {
 }
 
 func (a *app) adminListScopes(w http.ResponseWriter, r *http.Request) {
-	access, err := a.requireAdministrator(r)
-	if err != nil {
-		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "RBAC store unavailable"})
-		return
-	}
-	if !hasPermission(access, "*") {
-		writeJSON(w, http.StatusForbidden, map[string]string{"error": "administrator permission required"})
-		return
-	}
 	principalType := strings.TrimSpace(r.URL.Query().Get("principal_type"))
 	principalID := strings.TrimSpace(r.URL.Query().Get("principal_id"))
 	if principalType == "" || principalID == "" {
@@ -75,15 +51,7 @@ func decodeScopeGrant(w http.ResponseWriter, r *http.Request) (platformdb.ScopeG
 }
 
 func (a *app) adminAddScope(w http.ResponseWriter, r *http.Request) {
-	access, err := a.requireAdministrator(r)
-	if err != nil {
-		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "RBAC store unavailable"})
-		return
-	}
-	if !hasPermission(access, "*") {
-		writeJSON(w, http.StatusForbidden, map[string]string{"error": "administrator permission required"})
-		return
-	}
+	access := accessFrom(r.Context())
 	grant, ok := decodeScopeGrant(w, r)
 	if !ok {
 		return
@@ -97,15 +65,7 @@ func (a *app) adminAddScope(w http.ResponseWriter, r *http.Request) {
 }
 
 func (a *app) adminDeleteScope(w http.ResponseWriter, r *http.Request) {
-	access, err := a.requireAdministrator(r)
-	if err != nil {
-		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "RBAC store unavailable"})
-		return
-	}
-	if !hasPermission(access, "*") {
-		writeJSON(w, http.StatusForbidden, map[string]string{"error": "administrator permission required"})
-		return
-	}
+	access := accessFrom(r.Context())
 	grant, ok := decodeScopeGrant(w, r)
 	if !ok {
 		return

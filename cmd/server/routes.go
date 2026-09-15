@@ -20,10 +20,13 @@ const (
 
 // route is one endpoint the server exposes.
 type route struct {
-	Method  string
-	Path    string
-	Auth    authKind
-	Handler func(*app) http.HandlerFunc
+	Method string
+	Path   string
+	Auth   authKind
+	// Permission is required to reach the handler. An empty permission means
+	// authentication alone is enough; "*" means administrator.
+	Permission string
+	Handler    func(*app) http.HandlerFunc
 }
 
 // Pattern renders the route as a net/http routing pattern.
@@ -45,35 +48,41 @@ func routes() []route {
 		// Human API.
 		{Method: http.MethodGet, Path: "/api/v1/me", Auth: authHuman, Handler: func(a *app) http.HandlerFunc { return a.me }},
 		{Method: http.MethodGet, Path: "/api/v1/modules", Auth: authHuman, Handler: func(a *app) http.HandlerFunc { return a.modules }},
-		{Method: http.MethodGet, Path: "/api/v1/clients", Auth: authHuman, Handler: func(a *app) http.HandlerFunc { return a.listClients }},
-		{Method: http.MethodGet, Path: "/api/v1/contacts", Auth: authHuman, Handler: func(a *app) http.HandlerFunc { return a.listContacts }},
-		{Method: http.MethodGet, Path: "/api/v1/projects", Auth: authHuman, Handler: func(a *app) http.HandlerFunc { return a.listProjects }},
-		{Method: http.MethodGet, Path: "/api/v1/issues", Auth: authHuman, Handler: func(a *app) http.HandlerFunc { return a.listIssues }},
-		{Method: http.MethodGet, Path: "/api/v1/documents", Auth: authHuman, Handler: func(a *app) http.HandlerFunc { return a.listDocuments }},
-		{Method: http.MethodPost, Path: "/api/v1/global-ids", Auth: authHuman, Handler: func(a *app) http.HandlerFunc { return a.createGlobalID }},
-		{Method: http.MethodGet, Path: "/api/v1/global-ids/{id}", Auth: authHuman, Handler: func(a *app) http.HandlerFunc { return a.resolveGlobalID }},
-		{Method: http.MethodGet, Path: "/api/v1/audit", Auth: authHuman, Handler: func(a *app) http.HandlerFunc { return a.auditEvents }},
-		{Method: http.MethodGet, Path: "/api/v1/admin/rbac/roles", Auth: authHuman, Handler: func(a *app) http.HandlerFunc { return a.adminRoles }},
-		{Method: http.MethodGet, Path: "/api/v1/admin/rbac/scopes", Auth: authHuman, Handler: func(a *app) http.HandlerFunc { return a.adminListScopes }},
-		{Method: http.MethodPost, Path: "/api/v1/admin/rbac/scopes", Auth: authHuman, Handler: func(a *app) http.HandlerFunc { return a.adminAddScope }},
-		{Method: http.MethodDelete, Path: "/api/v1/admin/rbac/scopes", Auth: authHuman, Handler: func(a *app) http.HandlerFunc { return a.adminDeleteScope }},
+		{Method: http.MethodGet, Path: "/api/v1/clients", Auth: authHuman, Permission: "crm.client.read", Handler: func(a *app) http.HandlerFunc { return a.listClients }},
+		{Method: http.MethodGet, Path: "/api/v1/contacts", Auth: authHuman, Permission: "crm.client.read", Handler: func(a *app) http.HandlerFunc { return a.listContacts }},
+		{Method: http.MethodGet, Path: "/api/v1/projects", Auth: authHuman, Permission: "projects.task.read", Handler: func(a *app) http.HandlerFunc { return a.listProjects }},
+		{Method: http.MethodGet, Path: "/api/v1/issues", Auth: authHuman, Permission: "projects.task.read", Handler: func(a *app) http.HandlerFunc { return a.listIssues }},
+		{Method: http.MethodGet, Path: "/api/v1/documents", Auth: authHuman, Permission: "wiki.document.read", Handler: func(a *app) http.HandlerFunc { return a.listDocuments }},
+		{Method: http.MethodPost, Path: "/api/v1/global-ids", Auth: authHuman, Permission: "*", Handler: func(a *app) http.HandlerFunc { return a.createGlobalID }},
+		{Method: http.MethodGet, Path: "/api/v1/global-ids/{id}", Auth: authHuman, Permission: "*", Handler: func(a *app) http.HandlerFunc { return a.resolveGlobalID }},
+		{Method: http.MethodGet, Path: "/api/v1/audit", Auth: authHuman, Permission: "*", Handler: func(a *app) http.HandlerFunc { return a.auditEvents }},
+		{Method: http.MethodGet, Path: "/api/v1/admin/rbac/roles", Auth: authHuman, Permission: "*", Handler: func(a *app) http.HandlerFunc { return a.adminRoles }},
+		{Method: http.MethodGet, Path: "/api/v1/admin/rbac/scopes", Auth: authHuman, Permission: "*", Handler: func(a *app) http.HandlerFunc { return a.adminListScopes }},
+		{Method: http.MethodPost, Path: "/api/v1/admin/rbac/scopes", Auth: authHuman, Permission: "*", Handler: func(a *app) http.HandlerFunc { return a.adminAddScope }},
+		{Method: http.MethodDelete, Path: "/api/v1/admin/rbac/scopes", Auth: authHuman, Permission: "*", Handler: func(a *app) http.HandlerFunc { return a.adminDeleteScope }},
 
 		// Machine API. Kept separate from the human API so that a human token
 		// can never reach it and vice versa.
 		{Method: http.MethodGet, Path: "/api/service/v1/whoami", Auth: authService, Handler: func(a *app) http.HandlerFunc { return a.serviceWhoAmI }},
-		{Method: http.MethodGet, Path: "/api/service/v1/adapters", Auth: authService, Handler: func(a *app) http.HandlerFunc { return a.serviceAdapters }},
-		{Method: http.MethodGet, Path: "/api/service/v1/adapters/health", Auth: authService, Handler: func(a *app) http.HandlerFunc { return a.serviceAdapterHealth }},
-		{Method: http.MethodPost, Path: "/api/service/v1/events", Auth: authService, Handler: func(a *app) http.HandlerFunc { return a.servicePublishEvent }},
+		{Method: http.MethodGet, Path: "/api/service/v1/adapters", Auth: authService, Permission: "adapters.read", Handler: func(a *app) http.HandlerFunc { return a.serviceAdapters }},
+		{Method: http.MethodGet, Path: "/api/service/v1/adapters/health", Auth: authService, Permission: "adapters.read", Handler: func(a *app) http.HandlerFunc { return a.serviceAdapterHealth }},
+		{Method: http.MethodPost, Path: "/api/service/v1/events", Auth: authService, Permission: "events.publish", Handler: func(a *app) http.HandlerFunc { return a.servicePublishEvent }},
 	}
 }
 
 // handler builds the server handler from the route inventory. Authentication
-// is applied from each route's declared boundary rather than from per-route
-// wiring, so a new route cannot accidentally be registered unauthenticated.
+// and authorization are applied from each route's declared boundary and
+// permission rather than from per-route wiring, so a new route cannot
+// accidentally be registered unauthenticated or unauthorized.
 func (a *app) handler() http.Handler {
 	mux := http.NewServeMux()
 	for _, r := range routes() {
 		handler := http.Handler(r.Handler(a))
+		// Authorization wraps the handler first so that it runs after
+		// authentication has resolved the principal.
+		if r.Auth != authNone {
+			handler = a.authorize(r.Permission, handler)
+		}
 		switch r.Auth {
 		case authHuman:
 			handler = a.authenticate(handler)

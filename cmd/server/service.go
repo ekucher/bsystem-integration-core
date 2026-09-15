@@ -13,6 +13,7 @@ import (
 	"github.com/ekucher/bsystem-integration-core/internal/adapters/espocrm"
 	"github.com/ekucher/bsystem-integration-core/internal/adapters/outline"
 	"github.com/ekucher/bsystem-integration-core/internal/adapters/redmine"
+	"github.com/ekucher/bsystem-integration-core/internal/authz"
 	"github.com/ekucher/bsystem-integration-core/internal/events"
 	"github.com/ekucher/bsystem-integration-core/internal/platformdb"
 )
@@ -75,14 +76,6 @@ func hasString(values []string, expected string) bool {
 	}
 	return false
 }
-func serviceHasPermission(principal servicePrincipal, permission string) bool {
-	for _, value := range principal.Permissions {
-		if value == permission || value == "*" {
-			return true
-		}
-	}
-	return false
-}
 
 func (a *app) authenticateService(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -126,7 +119,11 @@ func (a *app) authenticateService(next http.Handler) http.Handler {
 			return
 		}
 		principal := servicePrincipal{ID: globalID, Subject: info.Sub, Name: name, Username: username, Groups: groups, Roles: profile.Roles, Permissions: profile.Permissions}
-		next.ServeHTTP(w, r.WithContext(context.WithValue(r.Context(), serviceContextKey, principal)))
+		ctx := context.WithValue(r.Context(), serviceContextKey, principal)
+		ctx = context.WithValue(ctx, principalContextKey, authz.Principal{
+			ID: globalID, Kind: authz.KindService, Roles: profile.Roles, Permissions: profile.Permissions,
+		})
+		next.ServeHTTP(w, r.WithContext(ctx))
 	})
 }
 
@@ -138,28 +135,14 @@ func (a *app) serviceWhoAmI(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, serviceFrom(r.Context()))
 }
 func (a *app) serviceAdapters(w http.ResponseWriter, r *http.Request) {
-	principal := serviceFrom(r.Context())
-	if !serviceHasPermission(principal, "adapters.read") {
-		writeJSON(w, http.StatusForbidden, map[string]string{"error": "adapters.read permission required"})
-		return
-	}
 	writeJSON(w, http.StatusOK, adapterRegistry.List())
 }
 func (a *app) serviceAdapterHealth(w http.ResponseWriter, r *http.Request) {
-	principal := serviceFrom(r.Context())
-	if !serviceHasPermission(principal, "adapters.read") {
-		writeJSON(w, http.StatusForbidden, map[string]string{"error": "adapters.read permission required"})
-		return
-	}
 	writeJSON(w, http.StatusOK, adapterRegistry.Health(r.Context()))
 }
 
 func (a *app) servicePublishEvent(w http.ResponseWriter, r *http.Request) {
 	principal := serviceFrom(r.Context())
-	if !serviceHasPermission(principal, "events.publish") {
-		writeJSON(w, http.StatusForbidden, map[string]string{"error": "events.publish permission required"})
-		return
-	}
 	var envelope events.Envelope
 	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<20)).Decode(&envelope); err != nil {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid JSON body"})

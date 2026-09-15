@@ -234,3 +234,27 @@ func TestRoutePatternsAreUnique(t *testing.T) {
 		seen[route.Pattern()] = true
 	}
 }
+
+// A route that requires a permission must document the denial it can produce,
+// and every authenticated route must document the rejection of a bad token.
+// Undocumented failure modes are the ones a client never handles.
+func TestOpenAPIDocumentsTheFailuresEachRouteCanProduce(t *testing.T) {
+	operations := documentedOperations(t, loadOpenAPI(t))
+	for _, route := range routes() {
+		operation, ok := operations[route.Pattern()]
+		if !ok || route.Auth == authNone {
+			continue
+		}
+		t.Run(route.Pattern(), func(t *testing.T) {
+			if _, documented := operation.Responses["401"]; !documented {
+				t.Error("an authenticated route must document 401")
+			}
+			if route.Permission == "" {
+				return
+			}
+			if _, documented := operation.Responses["403"]; !documented {
+				t.Errorf("a route requiring %q must document 403", route.Permission)
+			}
+		})
+	}
+}

@@ -78,34 +78,12 @@ func requestLimit(r *http.Request, defaultValue int) int {
 	}
 	return limit
 }
-func accessFromRequest(a *app, r *http.Request) (meResponse, error) {
-	info := r.Context().Value(userContextKey).(userInfo)
-	globalUserID := r.Context().Value(globalUserContextKey).(string)
-	return a.resolveAccess(r.Context(), info, globalUserID)
-}
-func hasRole(access meResponse, role string) bool {
-	for _, value := range access.Roles {
-		if value == role {
-			return true
-		}
-	}
-	return false
-}
 func upstreamFailure(w http.ResponseWriter, adapter string, err error) {
 	log.Printf("%s upstream request failed: %v", adapter, err)
 	writeJSON(w, http.StatusBadGateway, map[string]string{"error": "upstream service unavailable", "code": "upstream_unavailable", "source": adapter})
 }
 
 func (a *app) listClients(w http.ResponseWriter, r *http.Request) {
-	access, err := accessFromRequest(a, r)
-	if err != nil {
-		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "RBAC store unavailable"})
-		return
-	}
-	if !hasPermission(access, "crm.client.read") {
-		writeJSON(w, http.StatusForbidden, map[string]string{"error": "crm.client.read permission required"})
-		return
-	}
 	adapter, ok := adapterRegistry.Get("espocrm")
 	reader, okReader := adapter.(crmReader)
 	if !ok || !okReader {
@@ -130,15 +108,6 @@ func (a *app) listClients(w http.ResponseWriter, r *http.Request) {
 }
 
 func (a *app) listContacts(w http.ResponseWriter, r *http.Request) {
-	access, err := accessFromRequest(a, r)
-	if err != nil {
-		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "RBAC store unavailable"})
-		return
-	}
-	if !hasPermission(access, "crm.client.read") {
-		writeJSON(w, http.StatusForbidden, map[string]string{"error": "crm.client.read permission required"})
-		return
-	}
 	adapter, ok := adapterRegistry.Get("espocrm")
 	reader, okReader := adapter.(crmReader)
 	if !ok || !okReader {
@@ -169,15 +138,6 @@ func (a *app) listContacts(w http.ResponseWriter, r *http.Request) {
 }
 
 func (a *app) listProjects(w http.ResponseWriter, r *http.Request) {
-	access, err := accessFromRequest(a, r)
-	if err != nil {
-		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "RBAC store unavailable"})
-		return
-	}
-	if !hasPermission(access, "projects.task.read") {
-		writeJSON(w, http.StatusForbidden, map[string]string{"error": "projects.task.read permission required"})
-		return
-	}
 	adapter, ok := adapterRegistry.Get("redmine")
 	reader, okReader := adapter.(projectReader)
 	if !ok || !okReader {
@@ -203,15 +163,6 @@ func (a *app) listProjects(w http.ResponseWriter, r *http.Request) {
 }
 
 func (a *app) listIssues(w http.ResponseWriter, r *http.Request) {
-	access, err := accessFromRequest(a, r)
-	if err != nil {
-		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "RBAC store unavailable"})
-		return
-	}
-	if !hasPermission(access, "projects.task.read") {
-		writeJSON(w, http.StatusForbidden, map[string]string{"error": "projects.task.read permission required"})
-		return
-	}
 	adapter, ok := adapterRegistry.Get("redmine")
 	reader, okReader := adapter.(projectReader)
 	if !ok || !okReader {
@@ -244,19 +195,6 @@ func (a *app) listIssues(w http.ResponseWriter, r *http.Request) {
 }
 
 func (a *app) listDocuments(w http.ResponseWriter, r *http.Request) {
-	access, err := accessFromRequest(a, r)
-	if err != nil {
-		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "RBAC store unavailable"})
-		return
-	}
-	if !hasPermission(access, "wiki.document.read") {
-		writeJSON(w, http.StatusForbidden, map[string]string{"error": "wiki.document.read permission required"})
-		return
-	}
-	if hasRole(access, "Customer") {
-		writeJSON(w, http.StatusForbidden, map[string]string{"error": "customer document access requires tenant scope", "code": "scope_required"})
-		return
-	}
 	adapter, ok := adapterRegistry.Get("outline")
 	reader, okReader := adapter.(documentReader)
 	if !ok || !okReader {

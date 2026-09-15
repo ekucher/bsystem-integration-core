@@ -289,7 +289,7 @@ paths:
           content:
             application/json:
               schema: {$ref: '#/components/schemas/Error'}
-              example: {error: customer document access requires tenant scope, code: scope_required}
+              example: {error: wiki.document.read requires a scope grant for this resource, code: scope_required}
         '502': {$ref: '#/components/responses/UpstreamUnavailable'}
         '503': {$ref: '#/components/responses/DependencyUnavailable'}
 
@@ -610,12 +610,18 @@ components:
           example: {error: invalid or expired token}
     Forbidden:
       description: |
-        The caller is authenticated but lacks the required permission. The
-        body never discloses the resource that was refused.
+        The caller is authenticated but is not authorized.
+
+        `permission_required` means the caller does not hold the permission.
+        `scope_required` means the caller holds it but may only exercise it
+        inside a scope they have been granted, and no grant matches.
+
+        The body names the missing permission and nothing else: it never
+        discloses whether the resource exists or who owns it.
       content:
         application/json:
           schema: {$ref: '#/components/schemas/Error'}
-          example: {error: crm.client.read permission required}
+          example: {error: crm.client.read permission required, code: permission_required}
     ServiceForbidden:
       description: |
         The token is not a service identity in `BSYSTEM-Services`, or the
@@ -661,7 +667,7 @@ components:
         code:
           type: string
           description: Stable machine-readable code.
-          enum: [upstream_unavailable, scope_required]
+          enum: [upstream_unavailable, scope_required, permission_required]
         source:
           type: string
           description: The adapter id of the failing upstream, when applicable.
