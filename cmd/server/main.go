@@ -60,36 +60,6 @@ const (
 	requestIDContextKey  contextKey = "request-id"
 )
 
-var groupRoles = map[string]string{
-	"BSYSTEM-Admins":     "Administrator",
-	"BSYSTEM-Managers":   "Manager",
-	"BSYSTEM-Developers": "Developer",
-	"BSYSTEM-QA":         "QA",
-	"BSYSTEM-Support":    "Support",
-	"BSYSTEM-DevOps":     "DevOps",
-	"BSYSTEM-Customers":  "Customer",
-}
-
-var rolePermissions = map[string][]string{
-	"Administrator": {"*"},
-	"Manager":       {"crm.client.read", "projects.task.read", "qa.report.read", "wiki.document.read", "operations.server.read", "support.incident.read"},
-	"Developer":     {"projects.task.read", "projects.task.edit", "development.repo.read", "development.pr.write", "qa.testcase.read", "wiki.document.read", "wiki.document.edit", "operations.server.read"},
-	"QA":            {"projects.task.read", "qa.testcase.read", "qa.testcase.execute", "qa.bug.write", "wiki.document.read"},
-	"Support":       {"crm.client.read", "projects.task.read", "wiki.document.read", "operations.server.read", "support.incident.read", "support.incident.write"},
-	"DevOps":        {"development.repo.read", "wiki.document.read", "wiki.document.edit", "operations.server.read", "operations.server.manage"},
-	"Customer":      {"portal.read", "wiki.document.read", "support.incident.read"},
-}
-
-var roleModules = map[string][]string{
-	"Administrator": {"crm", "projects", "qa", "development", "wiki", "operations", "support"},
-	"Manager":       {"crm", "projects", "qa", "wiki", "operations", "support"},
-	"Developer":     {"projects", "qa", "development", "wiki", "operations"},
-	"QA":            {"projects", "qa", "wiki"},
-	"Support":       {"crm", "projects", "wiki", "operations", "support"},
-	"DevOps":        {"development", "wiki", "operations"},
-	"Customer":      {"wiki", "support"},
-}
-
 type app struct {
 	db *platformdb.DB
 	nc *nats.Conn
@@ -189,22 +159,26 @@ func unique(values []string) []string {
 	return result
 }
 
-func resolveAccess(info userInfo, globalUserID string) meResponse {
-	roles, permissions, modules := []string{}, []string{}, []string{}
-	for _, group := range info.Groups {
-		role, ok := groupRoles[group]
-		if !ok {
-			continue
-		}
-		roles = append(roles, role)
-		permissions = append(permissions, rolePermissions[role]...)
-		modules = append(modules, roleModules[role]...)
+func (a *app) resolveAccess(ctx context.Context, info userInfo, globalUserID string) (meResponse, error) {
+	profile, err := a.db.ResolveAccess(ctx, unique(info.Groups), "human")
+	if err != nil {
+		return meResponse{}, err
 	}
 	username := info.PreferredUsername
 	if username == "" {
 		username = info.Email
 	}
-	return meResponse{ID: globalUserID, Subject: info.Sub, Email: info.Email, Name: info.Name, Username: username, Groups: unique(info.Groups), Roles: unique(roles), Permissions: unique(permissions), Modules: unique(modules)}
+	return meResponse{
+		ID:          globalUserID,
+		Subject:     info.Sub,
+		Email:       info.Email,
+		Name:        info.Name,
+		Username:    username,
+		Groups:      unique(info.Groups),
+		Roles:       profile.Roles,
+		Permissions: profile.Permissions,
+		Modules:     profile.Modules,
+	}, nil
 }
 
 func hasPermission(access meResponse, permission string) bool {
@@ -269,19 +243,28 @@ func (a *app) health(w http.ResponseWriter, r *http.Request) {
 	if checks["database"] == "error" {
 		code = http.StatusServiceUnavailable
 	}
-	writeJSON(w, code, healthResponse{Status: status, Service: "bsystem-integration-core", Version: "0.4.0", Timestamp: time.Now().UTC().Format(time.RFC3339), Checks: checks})
+	writeJSON(w, code, healthResponse{Status: status, Service: "bsystem-integration-core", Version: "0.5.0", Timestamp: time.Now().UTC().Format(time.RFC3339), Checks: checks})
 }
 
 func (a *app) me(w http.ResponseWriter, r *http.Request) {
 	info := r.Context().Value(userContextKey).(userInfo)
 	globalUserID := r.Context().Value(globalUserContextKey).(string)
-	writeJSON(w, http.StatusOK, resolveAccess(info, globalUserID))
+	access, err := a.resolveAccess(r.Context(), info, globalUserID)
+	if err != nil {
+		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "RBAC store unavailable"})
+		return
+	}
+	writeJSON(w, http.StatusOK, access)
 }
 
 func (a *app) modules(w http.ResponseWriter, r *http.Request) {
 	info := r.Context().Value(userContextKey).(userInfo)
 	globalUserID := r.Context().Value(globalUserContextKey).(string)
-	access := resolveAccess(info, globalUserID)
+	access, err := a.resolveAccess(r.Context(), info, globalUserID)
+	if err != nil {
+		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "RBAC store unavailable"})
+		return
+	}
 	allowed := map[string]bool{}
 	for _, id := range access.Modules {
 		allowed[id] = true
@@ -303,7 +286,11 @@ func (a *app) modules(w http.ResponseWriter, r *http.Request) {
 func (a *app) createGlobalID(w http.ResponseWriter, r *http.Request) {
 	info := r.Context().Value(userContextKey).(userInfo)
 	globalUserID := r.Context().Value(globalUserContextKey).(string)
-	access := resolveAccess(info, globalUserID)
+	access, err := a.resolveAccess(r.Context(), info, globalUserID)
+	if err != nil {
+		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "RBAC store unavailable"})
+		return
+	}
 	if !hasPermission(access, "*") {
 		writeJSON(w, http.StatusForbidden, map[string]string{"error": "administrator permission required"})
 		return
@@ -333,7 +320,11 @@ func (a *app) createGlobalID(w http.ResponseWriter, r *http.Request) {
 func (a *app) resolveGlobalID(w http.ResponseWriter, r *http.Request) {
 	info := r.Context().Value(userContextKey).(userInfo)
 	globalUserID := r.Context().Value(globalUserContextKey).(string)
-	access := resolveAccess(info, globalUserID)
+	access, err := a.resolveAccess(r.Context(), info, globalUserID)
+	if err != nil {
+		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "RBAC store unavailable"})
+		return
+	}
 	if !hasPermission(access, "*") {
 		writeJSON(w, http.StatusForbidden, map[string]string{"error": "administrator permission required"})
 		return
@@ -355,7 +346,11 @@ func (a *app) resolveGlobalID(w http.ResponseWriter, r *http.Request) {
 func (a *app) auditEvents(w http.ResponseWriter, r *http.Request) {
 	info := r.Context().Value(userContextKey).(userInfo)
 	globalUserID := r.Context().Value(globalUserContextKey).(string)
-	access := resolveAccess(info, globalUserID)
+	access, err := a.resolveAccess(r.Context(), info, globalUserID)
+	if err != nil {
+		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "RBAC store unavailable"})
+		return
+	}
 	if !hasPermission(access, "*") {
 		writeJSON(w, http.StatusForbidden, map[string]string{"error": "administrator permission required"})
 		return
@@ -410,6 +405,6 @@ func main() {
 		addr = ":8080"
 	}
 	server := &http.Server{Addr: addr, Handler: requestID(root), ReadHeaderTimeout: 5 * time.Second, ReadTimeout: 15 * time.Second, WriteTimeout: 15 * time.Second, IdleTimeout: 60 * time.Second}
-	log.Printf("bsystem-integration-core v0.4.0 listening on %s", addr)
+	log.Printf("bsystem-integration-core v0.5.0 listening on %s", addr)
 	log.Fatal(server.ListenAndServe())
 }
