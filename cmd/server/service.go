@@ -205,5 +205,12 @@ func registerServiceRoutes(root *http.ServeMux, a *app) {
 	serviceMux.HandleFunc("GET /api/service/v1/adapters/health", a.serviceAdapterHealth)
 	serviceMux.HandleFunc("POST /api/service/v1/events", a.servicePublishEvent)
 	root.Handle("/api/service/", a.authenticateService(serviceMux))
+
+	businessMux := http.NewServeMux()
+	registerBusinessRoutes(businessMux, a)
+	for _, path := range []string{"/api/v1/clients", "/api/v1/contacts", "/api/v1/projects", "/api/v1/issues"} {
+		root.Handle(path, a.authenticate(businessMux))
+	}
+
 	registerAdminRBACRootRoutes(root, a)
 }
