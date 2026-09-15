@@ -40,6 +40,27 @@ type Adapter interface {
 	Health(context.Context) Health
 }
 
+// Breakered is implemented by adapters that protect their upstream with a
+// circuit breaker. It is optional so that an adapter without one — the
+// disabled placeholder, for instance — needs no stub.
+type Breakered interface {
+	BreakerState() string
+}
+
+// BreakerStates returns the circuit state of every adapter that has one,
+// keyed by adapter id, for health reporting and metrics.
+func (r *Registry) BreakerStates() map[string]string {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	result := map[string]string{}
+	for id, adapter := range r.adapters {
+		if breakered, ok := adapter.(Breakered); ok {
+			result[id] = breakered.BreakerState()
+		}
+	}
+	return result
+}
+
 type Registry struct {
 	mu       sync.RWMutex
 	adapters map[string]Adapter

@@ -103,12 +103,19 @@ is defined; `source` names the failing adapter.
 | `permission_required` | the caller does not hold the permission |
 | `scope_required` | the caller holds it, but no grant covers this resource |
 | `not_found` | no such resource, or the caller may not learn there is one |
+| `invalid_cursor` | the pagination cursor was not issued by this platform |
 | `upstream_unavailable` | the source system failed, rate-limited or timed out |
 
-An upstream failure — an error status, a rate limit or a timeout — normalizes to
-`502` with `upstream_unavailable`. Upstream status codes, hostnames, credentials
-and payloads are never forwarded, and no error body carries a credential, an
+An upstream failure — an error status, a rate limit, a timeout, or an open
+circuit after repeated failures — normalizes to `502` with
+`upstream_unavailable`. Upstream status codes, hostnames, credentials and
+payloads are never forwarded, and no error body carries a credential, an
 internal hostname, a stack trace or an upstream payload.
+
+Upstream calls are bounded, retried only where retrying can help, and shed
+through a circuit breaker once an upstream is plainly down. See
+[ADAPTERS.md](ADAPTERS.md) and
+[ADR-006](adr/ADR-006-upstream-resilience-policy.md).
 
 ## Normalized entities
 
@@ -165,9 +172,31 @@ labels.
 
 ## Pagination
 
-Collections accept `limit`. Values above the maximum are clamped rather than
-rejected. Cursor-based pagination is not part of this version; collections are
-bounded by `limit` alone.
+Every collection returns the same envelope:
+
+```json
+{
+  "data": [ ... ],
+  "pagination": {"total": 42, "limit": 50, "next_cursor": "bzo1MA"}
+}
+```
+
+`total` is the size of the whole collection as the source system reports it,
+not the size of the page. `limit` is the page size actually applied.
+
+A caller walks a collection by following `next_cursor` until it is absent. It
+is never present on the final page, so the walk always terminates.
+
+Cursors are opaque and must not be constructed or parsed: the encoding is an
+implementation detail and will change when a source system gains real cursors.
+A cursor the platform did not issue is rejected with `invalid_cursor` rather
+than reinterpreted.
+
+A `limit` above the maximum is clamped rather than rejected, so a caller
+asking for more than the platform serves gets the maximum. The cap is what
+stops one request pulling an unbounded amount of upstream data; it is 200 for
+CRM collections and 100 for project and document collections, matching those
+systems' own limits.
 
 ## Audit
 

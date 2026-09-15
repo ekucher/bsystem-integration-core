@@ -169,16 +169,25 @@ paths:
       description: Requires `crm.client.read`. EspoCRM remains authoritative.
       parameters:
         - $ref: '#/components/parameters/Limit'
+        - $ref: '#/components/parameters/Cursor'
       responses:
         '200':
           description: Clients with `CL-*` Global IDs.
           content:
             application/json:
               schema:
-                type: array
-                items: {$ref: '#/components/schemas/Client'}
+                allOf:
+                  - $ref: '#/components/schemas/Collection'
+                  - type: object
+                    properties:
+                      data:
+                        type: array
+                        items: {$ref: '#/components/schemas/Client'}
               example:
-                - {id: CL-000001, source: espocrm, source_id: acc-northwind, name: Northwind Trading, website: 'https://northwind.example', email: info@northwind.example}
+                data:
+                  - {id: CL-000001, source: espocrm, source_id: acc-northwind, name: Northwind Trading, website: 'https://northwind.example', email: info@northwind.example}
+                pagination: {total: 3, limit: 1, next_cursor: bzox}
+        '400': {$ref: '#/components/responses/BadRequest'}
         '401': {$ref: '#/components/responses/Unauthorized'}
         '403': {$ref: '#/components/responses/Forbidden'}
         '502': {$ref: '#/components/responses/UpstreamUnavailable'}
@@ -195,16 +204,25 @@ paths:
         what the caller can reach.
       parameters:
         - $ref: '#/components/parameters/Limit'
+        - $ref: '#/components/parameters/Cursor'
       responses:
         '200':
           description: Contacts with `CT-*` Global IDs.
           content:
             application/json:
               schema:
-                type: array
-                items: {$ref: '#/components/schemas/Contact'}
+                allOf:
+                  - $ref: '#/components/schemas/Collection'
+                  - type: object
+                    properties:
+                      data:
+                        type: array
+                        items: {$ref: '#/components/schemas/Contact'}
               example:
-                - {id: CT-000001, source: espocrm, source_id: ct-anna, name: Anna Kovalenko, client_id: CL-000001, email: anna@northwind.example}
+                data:
+                  - {id: CT-000001, source: espocrm, source_id: ct-anna, name: Anna Kovalenko, client_id: CL-000001, email: anna@northwind.example}
+                pagination: {total: 3, limit: 1, next_cursor: bzox}
+        '400': {$ref: '#/components/responses/BadRequest'}
         '401': {$ref: '#/components/responses/Unauthorized'}
         '403': {$ref: '#/components/responses/Forbidden'}
         '502': {$ref: '#/components/responses/UpstreamUnavailable'}
@@ -218,16 +236,25 @@ paths:
       description: Requires `projects.task.read`. Redmine remains authoritative.
       parameters:
         - $ref: '#/components/parameters/Limit'
+        - $ref: '#/components/parameters/Cursor'
       responses:
         '200':
           description: Projects with `PR-*` Global IDs.
           content:
             application/json:
               schema:
-                type: array
-                items: {$ref: '#/components/schemas/Project'}
+                allOf:
+                  - $ref: '#/components/schemas/Collection'
+                  - type: object
+                    properties:
+                      data:
+                        type: array
+                        items: {$ref: '#/components/schemas/Project'}
               example:
-                - {id: PR-000001, source: redmine, source_id: '101', name: Northwind Portal, identifier: northwind-portal}
+                data:
+                  - {id: PR-000001, source: redmine, source_id: '101', name: Northwind Portal, identifier: northwind-portal}
+                pagination: {total: 3, limit: 1, next_cursor: bzox}
+        '400': {$ref: '#/components/responses/BadRequest'}
         '401': {$ref: '#/components/responses/Unauthorized'}
         '403': {$ref: '#/components/responses/Forbidden'}
         '502': {$ref: '#/components/responses/UpstreamUnavailable'}
@@ -241,6 +268,7 @@ paths:
       description: Requires `projects.task.read`. Redmine remains authoritative.
       parameters:
         - $ref: '#/components/parameters/Limit'
+        - $ref: '#/components/parameters/Cursor'
         - name: project
           in: query
           required: false
@@ -253,10 +281,18 @@ paths:
           content:
             application/json:
               schema:
-                type: array
-                items: {$ref: '#/components/schemas/Issue'}
+                allOf:
+                  - $ref: '#/components/schemas/Collection'
+                  - type: object
+                    properties:
+                      data:
+                        type: array
+                        items: {$ref: '#/components/schemas/Issue'}
               example:
-                - {id: TSK-000001, source: redmine, source_id: '5001', subject: Design portal navigation, project_id: PR-000001, status: New}
+                data:
+                  - {id: TSK-000001, source: redmine, source_id: '5001', subject: Design portal navigation, project_id: PR-000001, status: New}
+                pagination: {total: 3, limit: 1, next_cursor: bzox}
+        '400': {$ref: '#/components/responses/BadRequest'}
         '401': {$ref: '#/components/responses/Unauthorized'}
         '403': {$ref: '#/components/responses/Forbidden'}
         '502': {$ref: '#/components/responses/UpstreamUnavailable'}
@@ -268,21 +304,31 @@ paths:
       operationId: listDocuments
       summary: List normalized internal documents
       description: |
-        Requires `wiki.document.read`. The Customer role is denied with
-        `scope_required` until tenant-aware document scopes exist: an
-        undecided ownership boundary must deny rather than disclose.
+        Requires `wiki.document.read`. The Customer role is scope-confined, so
+        it is denied with `scope_required` until tenant ownership is
+        authoritative: an undecided ownership boundary must deny rather than
+        disclose.
       parameters:
         - $ref: '#/components/parameters/Limit'
+        - $ref: '#/components/parameters/Cursor'
       responses:
         '200':
           description: Documents with `DOC-*` Global IDs.
           content:
             application/json:
               schema:
-                type: array
-                items: {$ref: '#/components/schemas/Document'}
+                allOf:
+                  - $ref: '#/components/schemas/Collection'
+                  - type: object
+                    properties:
+                      data:
+                        type: array
+                        items: {$ref: '#/components/schemas/Document'}
               example:
-                - {id: DOC-000001, source: outline, source_id: doc-runbook, title: Integration Core Runbook, collection_id: col-internal, updated_at: '2026-01-06T11:30:00.000Z'}
+                data:
+                  - {id: DOC-000001, source: outline, source_id: doc-runbook, title: Integration Core Runbook, collection_id: col-internal, updated_at: '2026-01-06T11:30:00.000Z'}
+                pagination: {total: 3, limit: 1, next_cursor: bzox}
+        '400': {$ref: '#/components/responses/BadRequest'}
         '401': {$ref: '#/components/responses/Unauthorized'}
         '403':
           description: Missing `wiki.document.read`, or a tenant scope is required.
@@ -730,18 +776,37 @@ components:
       in: query
       required: false
       description: |
-        Maximum items to return. Values above the maximum are clamped rather
-        than rejected. Cursor-based pagination is not part of this version;
-        collections are bounded by this limit alone.
+        Maximum items to return. A value above the maximum is clamped rather
+        than rejected, so a caller asking for more than the platform serves
+        gets the maximum. The cap is what stops one request pulling an
+        unbounded amount of upstream data.
+
+        The effective maximum depends on the source system: 200 for CRM
+        collections, 100 for project and document collections.
       schema: {type: integer, minimum: 1, maximum: 200, default: 50}
+    Cursor:
+      name: cursor
+      in: query
+      required: false
+      description: |
+        An opaque position taken from a previous response's
+        `pagination.next_cursor`. Omit it for the first page.
+
+        Cursors must not be constructed or parsed by callers: the encoding is
+        an implementation detail and will change when a source system gains
+        real cursors. A cursor the platform did not issue is rejected with
+        `invalid_cursor` rather than reinterpreted.
+      schema: {type: string}
 
   responses:
     BadRequest:
-      description: The request is malformed or missing a required field.
+      description: |
+        The request is malformed, missing a required field, or carries a
+        pagination cursor the platform did not issue.
       content:
         application/json:
           schema: {$ref: '#/components/schemas/Error'}
-          example: {error: entity_type, source and source_id are required}
+          example: {error: invalid pagination cursor, code: invalid_cursor}
     Unauthorized:
       description: The access token is missing, invalid or expired.
       content:
@@ -795,6 +860,42 @@ components:
           example: {error: RBAC store unavailable}
 
   schemas:
+    Collection:
+      type: object
+      description: |
+        The envelope every normalized collection returns. `data` holds the
+        current page; `pagination` says how to continue.
+      required: [data, pagination]
+      properties:
+        data:
+          type: array
+          items: {}
+        pagination: {$ref: '#/components/schemas/Pagination'}
+
+    Pagination:
+      type: object
+      description: |
+        Describes the returned window. A caller walks a collection by
+        following `next_cursor` until it is absent; it is never present on the
+        final page, so the walk always terminates.
+      required: [total, limit]
+      properties:
+        total:
+          type: integer
+          description: |
+            The size of the whole collection as the source system reports it,
+            not the size of this page.
+        limit:
+          type: integer
+          description: The number of items actually returned in this page.
+        next_cursor:
+          type: string
+          description: |
+            Opaque position of the following page. Absent once the collection
+            is exhausted.
+      examples:
+        - {total: 42, limit: 50, next_cursor: bzo1MA}
+
     Error:
       type: object
       description: |
@@ -808,7 +909,7 @@ components:
         code:
           type: string
           description: Stable machine-readable code.
-          enum: [upstream_unavailable, scope_required, permission_required, not_found]
+          enum: [upstream_unavailable, scope_required, permission_required, not_found, invalid_cursor]
         source:
           type: string
           description: The adapter id of the failing upstream, when applicable.

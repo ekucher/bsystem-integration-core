@@ -3,11 +3,14 @@ package outline
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/ekucher/bsystem-integration-core/internal/adapters"
 )
 
 // documentsListBody is the envelope Outline actually returns from
@@ -43,7 +46,7 @@ func TestListDocuments(t *testing.T) {
 	})
 
 	client := newTestClient(t, mux)
-	documents, err := client.ListDocuments(context.Background(), 2)
+	documents, info, err := client.ListDocuments(context.Background(), adapters.Page{Limit: 2})
 	if err != nil {
 		t.Fatalf("list documents: %v", err)
 	}
@@ -59,6 +62,86 @@ func TestListDocuments(t *testing.T) {
 	if receivedLimit != 2 {
 		t.Fatalf("limit sent upstream = %v, want 2", receivedLimit)
 	}
+	if info.Total != 2 || info.NextCursor != "" {
+		t.Fatalf("page info = %+v, want the collection exhausted", info)
+	}
+}
+
+// Outline reads over POST, so the offset travels in the request body rather
+// than the query string.
+func TestListDocumentsPaginates(t *testing.T) {
+	ids := []string{"d1", "d2", "d3", "d4", "d5"}
+	mux := http.NewServeMux()
+	mux.HandleFunc("/api/documents.list", func(w http.ResponseWriter, r *http.Request) {
+		var body struct {
+			Limit  int `json:"limit"`
+			Offset int `json:"offset"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Errorf("decode request body: %v", err)
+		}
+		end := min(body.Offset+body.Limit, len(ids))
+		items := ""
+		for i := body.Offset; i < end; i++ {
+			if items != "" {
+				items += ","
+			}
+			items += `{"id":"` + ids[i] + `","title":"t"}`
+		}
+		_, _ = fmt.Fprintf(w, `{"data":[%s],"pagination":{"offset":%d,"limit":%d,"total":%d}}`, items, body.Offset, body.Limit, len(ids))
+	})
+	client := newTestClient(t, mux)
+
+	var walked []string
+	page := adapters.Page{Limit: 2}
+	for pages := 0; ; pages++ {
+		if pages > 10 {
+			t.Fatal("pagination did not terminate")
+		}
+		documents, info, err := client.ListDocuments(context.Background(), page)
+		if err != nil {
+			t.Fatalf("list documents: %v", err)
+		}
+		for _, document := range documents {
+			walked = append(walked, document.ID)
+		}
+		if info.NextCursor == "" {
+			break
+		}
+		page.Cursor = info.NextCursor
+	}
+	if len(walked) != len(ids) {
+		t.Fatalf("walked %v, want every document exactly once", walked)
+	}
+}
+
+func TestSearchDocuments(t *testing.T) {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/api/documents.search", func(w http.ResponseWriter, r *http.Request) {
+		var body struct {
+			Query string `json:"query"`
+		}
+		_ = json.NewDecoder(r.Body).Decode(&body)
+		if body.Query != "runbook" {
+			t.Errorf("query = %q, want runbook", body.Query)
+		}
+		_, _ = w.Write([]byte(`{"data":[{"context":"…runbook…","ranking":0.9,"document":{"id":"doc-1","title":"Runbook"}}],"pagination":{"offset":0,"limit":1,"total":1}}`))
+	})
+	client := newTestClient(t, mux)
+
+	hits, info, err := client.SearchDocuments(context.Background(), "runbook", adapters.Page{Limit: 10})
+	if err != nil {
+		t.Fatalf("search documents: %v", err)
+	}
+	if len(hits) != 1 || hits[0].Document.Title != "Runbook" || hits[0].Context == "" {
+		t.Fatalf("unexpected hits: %#v", hits)
+	}
+	if info.Total != 1 {
+		t.Fatalf("page info = %+v", info)
+	}
+	if _, _, err := client.SearchDocuments(context.Background(), "  ", adapters.Page{}); err == nil {
+		t.Fatal("an empty query must be rejected before the upstream call")
+	}
 }
 
 func TestListDocumentsBoundsTheLimit(t *testing.T) {
@@ -70,7 +153,9 @@ func TestListDocumentsBoundsTheLimit(t *testing.T) {
 		{name: "zero falls back", limit: 0, wantLimit: 50},
 		{name: "negative falls back", limit: -5, wantLimit: 50},
 		{name: "in range is kept", limit: 10, wantLimit: 10},
-		{name: "above the cap falls back", limit: 5000, wantLimit: 50},
+		// An over-large request is clamped to what the platform will serve,
+		// not rejected and not silently reduced to the default.
+		{name: "above the cap is clamped", limit: 5000, wantLimit: 100},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
@@ -83,7 +168,7 @@ func TestListDocumentsBoundsTheLimit(t *testing.T) {
 				_, _ = w.Write([]byte(`{"data":[],"pagination":{"offset":0,"limit":0,"total":0}}`))
 			})
 			client := newTestClient(t, mux)
-			if _, err := client.ListDocuments(context.Background(), test.limit); err != nil {
+			if _, _, err := client.ListDocuments(context.Background(), adapters.Page{Limit: test.limit}); err != nil {
 				t.Fatalf("list documents: %v", err)
 			}
 			if received != test.wantLimit {
@@ -169,7 +254,7 @@ func TestErrorsDoNotLeakTheCredential(t *testing.T) {
 		w.WriteHeader(http.StatusInternalServerError)
 	})
 	client := newTestClient(t, mux)
-	_, err := client.ListDocuments(context.Background(), 10)
+	_, _, err := client.ListDocuments(context.Background(), adapters.Page{Limit: 10})
 	if err == nil {
 		t.Fatal("an upstream 500 must surface as an error")
 	}

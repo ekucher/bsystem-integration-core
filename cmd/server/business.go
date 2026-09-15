@@ -17,15 +17,34 @@ import (
 )
 
 type crmReader interface {
-	ListAccounts(context.Context, int) ([]espocrm.Account, error)
-	ListContacts(context.Context, int) ([]espocrm.Contact, error)
+	ListAccounts(context.Context, adapters.Page) ([]espocrm.Account, adapters.PageInfo, error)
+	ListContacts(context.Context, adapters.Page) ([]espocrm.Contact, adapters.PageInfo, error)
 }
 type projectReader interface {
-	ListProjects(context.Context, int) ([]redmine.Project, error)
-	ListIssues(context.Context, string, int) ([]redmine.Issue, error)
+	ListProjects(context.Context, adapters.Page) ([]redmine.Project, adapters.PageInfo, error)
+	ListIssues(context.Context, string, adapters.Page) ([]redmine.Issue, adapters.PageInfo, error)
 }
 type documentReader interface {
-	ListDocuments(context.Context, int) ([]outline.Document, error)
+	ListDocuments(context.Context, adapters.Page) ([]outline.Document, adapters.PageInfo, error)
+}
+
+// collection is the envelope every normalized list returns. The pagination
+// block is what lets a caller walk a collection without guessing whether more
+// remains.
+type collection[T any] struct {
+	Data       []T            `json:"data"`
+	Pagination paginationView `json:"pagination"`
+}
+
+type paginationView struct {
+	// Total is the size of the whole collection as the source system reports
+	// it, not the size of this page.
+	Total int `json:"total"`
+	// Limit is the page size actually applied, which may be smaller than the
+	// one requested.
+	Limit int `json:"limit"`
+	// NextCursor is absent once the collection is exhausted.
+	NextCursor string `json:"next_cursor,omitempty"`
 }
 
 type clientView struct {
@@ -72,83 +91,139 @@ type documentView struct {
 	UpdatedAt    string `json:"updated_at,omitempty"`
 }
 
-func requestLimit(r *http.Request, defaultValue int) int {
-	limit, err := strconv.Atoi(r.URL.Query().Get("limit"))
-	if err != nil || limit <= 0 {
-		return defaultValue
+// requestPage reads the pagination parameters. A malformed limit falls back
+// to the default and an out-of-range one is clamped by the adapter, because a
+// caller asking for more than the platform serves should get the maximum
+// rather than an error. A cursor the platform did not issue is rejected: it
+// cannot be interpreted, and guessing at it would silently return the wrong
+// window.
+func requestPage(w http.ResponseWriter, r *http.Request) (adapters.Page, bool) {
+	limit, err := strconv.Atoi(strings.TrimSpace(r.URL.Query().Get("limit")))
+	if err != nil {
+		limit = 0
 	}
-	if limit > 200 {
-		return 200
+	cursor := strings.TrimSpace(r.URL.Query().Get("cursor"))
+	if _, err := adapters.DecodeCursor(cursor); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid pagination cursor", "code": "invalid_cursor"})
+		return adapters.Page{}, false
 	}
-	return limit
+	return adapters.Page{Limit: limit, Cursor: cursor}, true
+}
+
+// writeCollection renders a normalized collection.
+func writeCollection[T any](w http.ResponseWriter, items []T, info adapters.PageInfo) {
+	if items == nil {
+		items = []T{}
+	}
+	writeJSON(w, http.StatusOK, collection[T]{
+		Data:       items,
+		Pagination: paginationView{Total: info.Total, Limit: len(items), NextCursor: info.NextCursor},
+	})
 }
 func upstreamFailure(w http.ResponseWriter, adapter string, err error) {
 	log.Printf("%s upstream request failed: %v", adapter, err)
 	writeJSON(w, http.StatusBadGateway, map[string]string{"error": "upstream service unavailable", "code": "upstream_unavailable", "source": adapter})
 }
 
+// adapterFor resolves a registered adapter and asserts the capability the
+// handler needs. An adapter that is absent or lacks the capability is a
+// configuration problem, not an upstream failure, so it is reported as such.
+func adapterFor[T any](w http.ResponseWriter, id, name string) (T, bool) {
+	var zero T
+	adapter, registered := adapterRegistry.Get(id)
+	if !registered {
+		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": name + " adapter not configured"})
+		return zero, false
+	}
+	reader, capable := adapter.(T)
+	if !capable {
+		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": name + " adapter does not support this capability"})
+		return zero, false
+	}
+	return reader, true
+}
+
+// mapGlobalID allocates or returns the Global ID for one upstream record.
+// A mapping failure is fatal to the request: returning the record without its
+// platform identity would hand the caller an unaddressable entity.
+func (a *app) mapGlobalID(w http.ResponseWriter, r *http.Request, entityType, source, sourceID string, metadata map[string]any) (string, bool) {
+	entity, err := a.db.CreateGlobalEntity(r.Context(), entityType, source, sourceID, "", metadata)
+	if err != nil {
+		log.Printf("Global ID mapping failed for %s/%s: %v", source, entityType, err)
+		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "Global ID mapping failed"})
+		return "", false
+	}
+	return entity.GlobalID, true
+}
+
 func (a *app) listClients(w http.ResponseWriter, r *http.Request) {
-	adapter, ok := adapterRegistry.Get("espocrm")
-	reader, okReader := adapter.(crmReader)
-	if !ok || !okReader {
-		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "EspoCRM adapter not configured"})
+	reader, ok := adapterFor[crmReader](w, "espocrm", "EspoCRM")
+	if !ok {
 		return
 	}
-	accounts, err := reader.ListAccounts(r.Context(), requestLimit(r, 50))
+	page, ok := requestPage(w, r)
+	if !ok {
+		return
+	}
+	accounts, info, err := reader.ListAccounts(r.Context(), page)
 	if err != nil {
 		upstreamFailure(w, "espocrm", err)
 		return
 	}
 	result := make([]clientView, 0, len(accounts))
 	for _, item := range accounts {
-		entity, err := a.db.CreateGlobalEntity(r.Context(), "client", "espocrm", item.ID, "", map[string]any{"name": item.Name})
-		if err != nil {
-			writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "Global ID mapping failed"})
+		globalID, ok := a.mapGlobalID(w, r, "client", "espocrm", item.ID, map[string]any{"name": item.Name})
+		if !ok {
 			return
 		}
-		result = append(result, clientView{ID: entity.GlobalID, Source: "espocrm", SourceID: item.ID, Name: item.Name, Website: item.Website, Email: item.Email, Phone: item.Phone})
+		result = append(result, clientView{ID: globalID, Source: "espocrm", SourceID: item.ID, Name: item.Name, Website: item.Website, Email: item.Email, Phone: item.Phone})
 	}
-	writeJSON(w, http.StatusOK, result)
+	writeCollection(w, result, info)
 }
 
 func (a *app) listContacts(w http.ResponseWriter, r *http.Request) {
-	adapter, ok := adapterRegistry.Get("espocrm")
-	reader, okReader := adapter.(crmReader)
-	if !ok || !okReader {
-		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "EspoCRM adapter not configured"})
+	reader, ok := adapterFor[crmReader](w, "espocrm", "EspoCRM")
+	if !ok {
 		return
 	}
-	contacts, err := reader.ListContacts(r.Context(), requestLimit(r, 50))
+	page, ok := requestPage(w, r)
+	if !ok {
+		return
+	}
+	contacts, info, err := reader.ListContacts(r.Context(), page)
 	if err != nil {
 		upstreamFailure(w, "espocrm", err)
 		return
 	}
 	result := make([]contactView, 0, len(contacts))
 	for _, item := range contacts {
-		entity, err := a.db.CreateGlobalEntity(r.Context(), "contact", "espocrm", item.ID, "", map[string]any{"name": item.Name})
-		if err != nil {
-			writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "Global ID mapping failed"})
+		globalID, ok := a.mapGlobalID(w, r, "contact", "espocrm", item.ID, map[string]any{"name": item.Name})
+		if !ok {
 			return
 		}
+		// The owning client is mapped here because the contact listing is
+		// where that relationship first becomes known to the platform.
 		clientID := ""
 		if item.AccountID != "" {
 			if mapped, mapErr := a.db.CreateGlobalEntity(r.Context(), "client", "espocrm", item.AccountID, "", nil); mapErr == nil {
 				clientID = mapped.GlobalID
 			}
 		}
-		result = append(result, contactView{ID: entity.GlobalID, Source: "espocrm", SourceID: item.ID, Name: item.Name, ClientID: clientID, Email: item.Email, Phone: item.Phone})
+		result = append(result, contactView{ID: globalID, Source: "espocrm", SourceID: item.ID, Name: item.Name, ClientID: clientID, Email: item.Email, Phone: item.Phone})
 	}
-	writeJSON(w, http.StatusOK, result)
+	writeCollection(w, result, info)
 }
 
 func (a *app) listProjects(w http.ResponseWriter, r *http.Request) {
-	adapter, ok := adapterRegistry.Get("redmine")
-	reader, okReader := adapter.(projectReader)
-	if !ok || !okReader {
-		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "Redmine adapter not configured"})
+	reader, ok := adapterFor[projectReader](w, "redmine", "Redmine")
+	if !ok {
 		return
 	}
-	projects, err := reader.ListProjects(r.Context(), requestLimit(r, 50))
+	page, ok := requestPage(w, r)
+	if !ok {
+		return
+	}
+	projects, info, err := reader.ListProjects(r.Context(), page)
 	if err != nil {
 		upstreamFailure(w, "redmine", err)
 		return
@@ -156,25 +231,26 @@ func (a *app) listProjects(w http.ResponseWriter, r *http.Request) {
 	result := make([]projectView, 0, len(projects))
 	for _, item := range projects {
 		sourceID := strconv.Itoa(item.ID)
-		entity, err := a.db.CreateGlobalEntity(r.Context(), "project", "redmine", sourceID, "", map[string]any{"identifier": item.Identifier, "name": item.Name})
-		if err != nil {
-			writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "Global ID mapping failed"})
+		globalID, ok := a.mapGlobalID(w, r, "project", "redmine", sourceID, map[string]any{"identifier": item.Identifier, "name": item.Name})
+		if !ok {
 			return
 		}
-		result = append(result, projectView{ID: entity.GlobalID, Source: "redmine", SourceID: sourceID, Name: item.Name, Identifier: item.Identifier, Description: item.Description})
+		result = append(result, projectView{ID: globalID, Source: "redmine", SourceID: sourceID, Name: item.Name, Identifier: item.Identifier, Description: item.Description})
 	}
-	writeJSON(w, http.StatusOK, result)
+	writeCollection(w, result, info)
 }
 
 func (a *app) listIssues(w http.ResponseWriter, r *http.Request) {
-	adapter, ok := adapterRegistry.Get("redmine")
-	reader, okReader := adapter.(projectReader)
-	if !ok || !okReader {
-		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "Redmine adapter not configured"})
+	reader, ok := adapterFor[projectReader](w, "redmine", "Redmine")
+	if !ok {
+		return
+	}
+	page, ok := requestPage(w, r)
+	if !ok {
 		return
 	}
 	project := strings.TrimSpace(r.URL.Query().Get("project"))
-	issues, err := reader.ListIssues(r.Context(), project, requestLimit(r, 50))
+	issues, info, err := reader.ListIssues(r.Context(), project, page)
 	if err != nil {
 		upstreamFailure(w, "redmine", err)
 		return
@@ -182,9 +258,8 @@ func (a *app) listIssues(w http.ResponseWriter, r *http.Request) {
 	result := make([]issueView, 0, len(issues))
 	for _, item := range issues {
 		sourceID := strconv.Itoa(item.ID)
-		entity, err := a.db.CreateGlobalEntity(r.Context(), "task", "redmine", sourceID, "", map[string]any{"subject": item.Subject})
-		if err != nil {
-			writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "Global ID mapping failed"})
+		globalID, ok := a.mapGlobalID(w, r, "task", "redmine", sourceID, map[string]any{"subject": item.Subject})
+		if !ok {
 			return
 		}
 		projectID := ""
@@ -193,33 +268,34 @@ func (a *app) listIssues(w http.ResponseWriter, r *http.Request) {
 				projectID = mapped.GlobalID
 			}
 		}
-		result = append(result, issueView{ID: entity.GlobalID, Source: "redmine", SourceID: sourceID, Subject: item.Subject, ProjectID: projectID, Status: item.Status.Name})
+		result = append(result, issueView{ID: globalID, Source: "redmine", SourceID: sourceID, Subject: item.Subject, ProjectID: projectID, Status: item.Status.Name})
 	}
-	writeJSON(w, http.StatusOK, result)
+	writeCollection(w, result, info)
 }
 
 func (a *app) listDocuments(w http.ResponseWriter, r *http.Request) {
-	adapter, ok := adapterRegistry.Get("outline")
-	reader, okReader := adapter.(documentReader)
-	if !ok || !okReader {
-		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "Outline adapter not configured"})
+	reader, ok := adapterFor[documentReader](w, "outline", "Outline")
+	if !ok {
 		return
 	}
-	documents, err := reader.ListDocuments(r.Context(), requestLimit(r, 50))
+	page, ok := requestPage(w, r)
+	if !ok {
+		return
+	}
+	documents, info, err := reader.ListDocuments(r.Context(), page)
 	if err != nil {
 		upstreamFailure(w, "outline", err)
 		return
 	}
 	result := make([]documentView, 0, len(documents))
 	for _, item := range documents {
-		entity, err := a.db.CreateGlobalEntity(r.Context(), "document", "outline", item.ID, "", map[string]any{"title": item.Title, "collection_id": item.CollectionID})
-		if err != nil {
-			writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "Global ID mapping failed"})
+		globalID, ok := a.mapGlobalID(w, r, "document", "outline", item.ID, map[string]any{"title": item.Title, "collection_id": item.CollectionID})
+		if !ok {
 			return
 		}
-		result = append(result, documentView{ID: entity.GlobalID, Source: "outline", SourceID: item.ID, Title: item.Title, URL: item.URL, CollectionID: item.CollectionID, UpdatedAt: item.UpdatedAt})
+		result = append(result, documentView{ID: globalID, Source: "outline", SourceID: item.ID, Title: item.Title, URL: item.URL, CollectionID: item.CollectionID, UpdatedAt: item.UpdatedAt})
 	}
-	writeJSON(w, http.StatusOK, result)
+	writeCollection(w, result, info)
 }
 
 // --- Detail endpoints -------------------------------------------------------
@@ -302,10 +378,8 @@ func (a *app) getClient(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	adapter, ok := adapterRegistry.Get("espocrm")
-	reader, okReader := adapter.(crmDetailReader)
-	if !ok || !okReader {
-		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "EspoCRM adapter not configured"})
+	reader, ok := adapterFor[crmDetailReader](w, "espocrm", "EspoCRM")
+	if !ok {
 		return
 	}
 	account, err := reader.GetAccount(r.Context(), entity.SourceID)
@@ -321,10 +395,8 @@ func (a *app) getContact(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	adapter, ok := adapterRegistry.Get("espocrm")
-	reader, okReader := adapter.(crmDetailReader)
-	if !ok || !okReader {
-		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "EspoCRM adapter not configured"})
+	reader, ok := adapterFor[crmDetailReader](w, "espocrm", "EspoCRM")
+	if !ok {
 		return
 	}
 	contact, err := reader.GetContact(r.Context(), entity.SourceID)
@@ -349,10 +421,8 @@ func (a *app) getProject(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	adapter, ok := adapterRegistry.Get("redmine")
-	reader, okReader := adapter.(projectDetailReader)
-	if !ok || !okReader {
-		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "Redmine adapter not configured"})
+	reader, ok := adapterFor[projectDetailReader](w, "redmine", "Redmine")
+	if !ok {
 		return
 	}
 	project, err := reader.GetProject(r.Context(), entity.SourceID)
@@ -368,10 +438,8 @@ func (a *app) getIssue(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	adapter, ok := adapterRegistry.Get("redmine")
-	reader, okReader := adapter.(projectDetailReader)
-	if !ok || !okReader {
-		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "Redmine adapter not configured"})
+	reader, ok := adapterFor[projectDetailReader](w, "redmine", "Redmine")
+	if !ok {
 		return
 	}
 	issue, err := reader.GetIssue(r.Context(), entity.SourceID)
@@ -393,10 +461,8 @@ func (a *app) getDocument(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	adapter, ok := adapterRegistry.Get("outline")
-	reader, okReader := adapter.(documentDetailReader)
-	if !ok || !okReader {
-		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "Outline adapter not configured"})
+	reader, ok := adapterFor[documentDetailReader](w, "outline", "Outline")
+	if !ok {
 		return
 	}
 	document, err := reader.GetDocument(r.Context(), entity.SourceID)

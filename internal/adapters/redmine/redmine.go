@@ -1,10 +1,11 @@
+// Package redmine adapts the Redmine REST API to BSYSTEM.
+//
+// It isolates HUB and the normalized API from Redmine's conventions: nothing
+// outside this package sees a Redmine field name, status code or envelope.
 package redmine
 
 import (
 	"context"
-	"encoding/json"
-	"errors"
-	"fmt"
 	"net/http"
 	"net/url"
 	"strconv"
@@ -12,14 +13,16 @@ import (
 	"time"
 
 	"github.com/ekucher/bsystem-integration-core/internal/adapters"
+	"github.com/ekucher/bsystem-integration-core/internal/adapters/httpx"
 )
 
+// Client reads projects and issues from Redmine.
 type Client struct {
-	baseURL *url.URL
-	apiKey  string
-	http    *http.Client
+	http   *httpx.Client
+	header http.Header
 }
 
+// Project is a Redmine project.
 type Project struct {
 	ID          int    `json:"id"`
 	Name        string `json:"name"`
@@ -28,6 +31,7 @@ type Project struct {
 	Status      int    `json:"status,omitempty"`
 }
 
+// Issue is a Redmine issue, which BSYSTEM normalizes to a task.
 type Issue struct {
 	ID      int    `json:"id"`
 	Subject string `json:"subject"`
@@ -51,71 +55,87 @@ type issuesResponse struct {
 	Total  int     `json:"total_count"`
 }
 
+// Collection bounds. Redmine's own maximum page size is 100.
+const (
+	defaultPageSize = 50
+	maxPageSize     = 100
+)
+
+// New returns a client for the Redmine instance at rawURL.
 func New(rawURL, apiKey string, timeout time.Duration) (*Client, error) {
-	rawURL = strings.TrimSpace(rawURL)
-	if rawURL == "" {
-		return nil, errors.New("Redmine base URL is required")
+	client, err := httpx.New(httpx.Options{Adapter: "redmine", BaseURL: rawURL, Timeout: timeout})
+	if err != nil {
+		return nil, err
 	}
-	u, err := url.Parse(strings.TrimRight(rawURL, "/"))
-	if err != nil || u.Scheme == "" || u.Host == "" {
-		return nil, errors.New("invalid Redmine base URL")
+	header := http.Header{}
+	if key := strings.TrimSpace(apiKey); key != "" {
+		header.Set("X-Redmine-API-Key", key)
 	}
-	if timeout <= 0 {
-		timeout = 10 * time.Second
-	}
-	return &Client{baseURL: u, apiKey: strings.TrimSpace(apiKey), http: &http.Client{Timeout: timeout}}, nil
+	return &Client{http: client, header: header}, nil
 }
 
 func (c *Client) Info() adapters.Info {
 	return adapters.Info{ID: "redmine", Name: "Redmine", Version: "1", Status: adapters.StatusReady, Capabilities: []string{"projects.read", "issues.read"}}
 }
 
+// Health probes the endpoint Redmine uses to describe the calling user, which
+// exercises both reachability and the credential.
 func (c *Client) Health(ctx context.Context) adapters.Health {
 	var out map[string]any
-	if err := c.getJSON(ctx, "/users/current.json", nil, &out); err != nil {
+	if err := c.get(ctx, "/users/current.json", nil, &out); err != nil {
 		return adapters.Health{Status: adapters.StatusDegraded, Message: err.Error()}
 	}
 	return adapters.Health{Status: adapters.StatusReady}
 }
 
-func (c *Client) ListProjects(ctx context.Context, limit int) ([]Project, error) {
-	if limit <= 0 || limit > 100 {
-		limit = 50
+// BreakerState reports the adapter's circuit state.
+func (c *Client) BreakerState() string { return string(c.http.BreakerState()) }
+
+// ListProjects returns one page of projects.
+func (c *Client) ListProjects(ctx context.Context, page adapters.Page) ([]Project, adapters.PageInfo, error) {
+	offset, limit, err := page.Resolve(defaultPageSize, maxPageSize)
+	if err != nil {
+		return nil, adapters.PageInfo{}, err
 	}
-	q := url.Values{"limit": {strconv.Itoa(limit)}}
+	query := url.Values{"limit": {strconv.Itoa(limit)}, "offset": {strconv.Itoa(offset)}}
 	var out projectsResponse
-	if err := c.getJSON(ctx, "/projects.json", q, &out); err != nil {
-		return nil, err
+	if err := c.get(ctx, "/projects.json", query, &out); err != nil {
+		return nil, adapters.PageInfo{}, err
 	}
-	return out.Projects, nil
+	return out.Projects, adapters.NewPageInfo(out.Total, offset, len(out.Projects)), nil
 }
 
-func (c *Client) ListIssues(ctx context.Context, projectID string, limit int) ([]Issue, error) {
-	if limit <= 0 || limit > 100 {
-		limit = 50
+// ListIssues returns one page of issues, optionally restricted to a project
+// by numeric id or identifier.
+func (c *Client) ListIssues(ctx context.Context, projectID string, page adapters.Page) ([]Issue, adapters.PageInfo, error) {
+	offset, limit, err := page.Resolve(defaultPageSize, maxPageSize)
+	if err != nil {
+		return nil, adapters.PageInfo{}, err
 	}
-	q := url.Values{"limit": {strconv.Itoa(limit)}, "status_id": {"*"}}
-	if strings.TrimSpace(projectID) != "" {
-		q.Set("project_id", strings.TrimSpace(projectID))
+	query := url.Values{
+		"limit":  {strconv.Itoa(limit)},
+		"offset": {strconv.Itoa(offset)},
+		// Redmine hides closed issues unless asked; BSYSTEM shows the whole
+		// collection and lets the caller filter.
+		"status_id": {"*"},
+	}
+	if projectID = strings.TrimSpace(projectID); projectID != "" {
+		query.Set("project_id", projectID)
 	}
 	var out issuesResponse
-	if err := c.getJSON(ctx, "/issues.json", q, &out); err != nil {
-		return nil, err
+	if err := c.get(ctx, "/issues.json", query, &out); err != nil {
+		return nil, adapters.PageInfo{}, err
 	}
-	return out.Issues, nil
+	return out.Issues, adapters.NewPageInfo(out.Total, offset, len(out.Issues)), nil
 }
 
 // GetProject reads one project by numeric id or identifier. It returns
 // adapters.ErrNotFound when the upstream has no such record.
 func (c *Client) GetProject(ctx context.Context, id string) (Project, error) {
-	id = strings.TrimSpace(id)
-	if id == "" {
-		return Project{}, adapters.ErrNotFound
-	}
 	var out struct {
 		Project Project `json:"project"`
 	}
-	if err := c.getJSON(ctx, "/projects/"+url.PathEscape(id)+".json", nil, &out); err != nil {
+	if err := c.getByID(ctx, "/projects/", id, &out); err != nil {
 		return Project{}, err
 	}
 	return out.Project, nil
@@ -124,46 +144,31 @@ func (c *Client) GetProject(ctx context.Context, id string) (Project, error) {
 // GetIssue reads one issue. It returns adapters.ErrNotFound when the upstream
 // has no such record.
 func (c *Client) GetIssue(ctx context.Context, id string) (Issue, error) {
-	id = strings.TrimSpace(id)
-	if id == "" {
-		return Issue{}, adapters.ErrNotFound
-	}
 	var out struct {
 		Issue Issue `json:"issue"`
 	}
-	if err := c.getJSON(ctx, "/issues/"+url.PathEscape(id)+".json", nil, &out); err != nil {
+	if err := c.getByID(ctx, "/issues/", id, &out); err != nil {
 		return Issue{}, err
 	}
 	return out.Issue, nil
 }
 
-func (c *Client) getJSON(ctx context.Context, path string, query url.Values, out any) error {
-	u := *c.baseURL
-	u.Path = strings.TrimRight(c.baseURL.Path, "/") + path
-	if query != nil {
-		u.RawQuery = query.Encode()
-	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, u.String(), nil)
-	if err != nil {
-		return err
-	}
-	req.Header.Set("Accept", "application/json")
-	if c.apiKey != "" {
-		req.Header.Set("X-Redmine-API-Key", c.apiKey)
-	}
-	resp, err := c.http.Do(req)
-	if err != nil {
-		return fmt.Errorf("Redmine request failed: %w", err)
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode == http.StatusNotFound {
+func (c *Client) getByID(ctx context.Context, prefix, id string, out any) error {
+	id = strings.TrimSpace(id)
+	if id == "" {
 		return adapters.ErrNotFound
 	}
-	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return fmt.Errorf("Redmine returned HTTP %d", resp.StatusCode)
-	}
-	if err := json.NewDecoder(resp.Body).Decode(out); err != nil {
-		return fmt.Errorf("decode Redmine response: %w", err)
-	}
-	return nil
+	return c.get(ctx, prefix+url.PathEscape(id)+".json", nil, out)
+}
+
+// get issues an idempotent read. Every Redmine call BSYSTEM makes is a read,
+// so all of them may be retried.
+func (c *Client) get(ctx context.Context, path string, query url.Values, out any) error {
+	return c.http.Do(ctx, httpx.Request{
+		Method:     http.MethodGet,
+		Path:       path,
+		Query:      query,
+		Header:     c.header,
+		Idempotent: true,
+	}, out)
 }
