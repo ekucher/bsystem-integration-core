@@ -187,4 +187,5 @@ func registerServiceRoutes(root *http.ServeMux, a *app) {
 	serviceMux.HandleFunc("GET /api/service/v1/adapters/health", a.serviceAdapterHealth)
 	serviceMux.HandleFunc("POST /api/service/v1/events", a.servicePublishEvent)
 	root.Handle("/api/service/", a.authenticateService(serviceMux))
+	registerAdminRBACRootRoutes(root, a)
 }
