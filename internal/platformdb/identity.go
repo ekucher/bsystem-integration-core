@@ -16,6 +16,11 @@ func (db *DB) EnsureIdentity(ctx context.Context, identity Identity) (string, bo
 	}
 	defer tx.Rollback(ctx)
 
+	// Serialize first-seen allocation for the same OIDC subject without a global lock.
+	if _, err := tx.Exec(ctx, `SELECT pg_advisory_xact_lock(hashtext($1))`, identity.Subject); err != nil {
+		return "", false, err
+	}
+
 	var globalID string
 	err = tx.QueryRow(ctx, `SELECT global_user_id FROM identities WHERE subject=$1 FOR UPDATE`, identity.Subject).Scan(&globalID)
 	created := false
