@@ -8,6 +8,15 @@ import (
 	"time"
 )
 
+func hasValue(values []string, wanted string) bool {
+	for _, value := range values {
+		if value == wanted {
+			return true
+		}
+	}
+	return false
+}
+
 func TestPersistenceLifecycle(t *testing.T) {
 	databaseURL := os.Getenv("TEST_DATABASE_URL")
 	if databaseURL == "" {
@@ -53,6 +62,49 @@ func TestPersistenceLifecycle(t *testing.T) {
 	}
 	if serviceCreatedAgain || serviceAgain != globalServiceID {
 		t.Fatalf("service Global ID is not stable: first=%q second=%q created=%v", globalServiceID, serviceAgain, serviceCreatedAgain)
+	}
+
+	developer, err := db.ResolveAccess(ctx, []string{"BSYSTEM-Developers"}, "human")
+	if err != nil {
+		t.Fatalf("resolve developer access: %v", err)
+	}
+	if !hasValue(developer.Roles, "Developer") || !hasValue(developer.Permissions, "development.pr.write") || !hasValue(developer.Modules, "development") {
+		t.Fatalf("unexpected developer access: %#v", developer)
+	}
+
+	admin, err := db.ResolveAccess(ctx, []string{"BSYSTEM-Admins"}, "human")
+	if err != nil {
+		t.Fatalf("resolve administrator access: %v", err)
+	}
+	if !hasValue(admin.Roles, "Administrator") || !hasValue(admin.Permissions, "*") {
+		t.Fatalf("unexpected administrator access: %#v", admin)
+	}
+
+	serviceAccess, err := db.ResolveAccess(ctx, []string{"BSYSTEM-Services"}, "service")
+	if err != nil {
+		t.Fatalf("resolve service access: %v", err)
+	}
+	if !hasValue(serviceAccess.Roles, "Service Core") || !hasValue(serviceAccess.Permissions, "events.publish") {
+		t.Fatalf("unexpected service access: %#v", serviceAccess)
+	}
+
+	grant := ScopeGrant{PrincipalType: "user", PrincipalID: globalUserID, ScopeType: "project", ScopeID: "PR-000123", PermissionID: "projects.task.read"}
+	if err := db.AddScopeGrant(ctx, grant); err != nil {
+		t.Fatalf("add scope grant: %v", err)
+	}
+	grants, err := db.ListScopeGrants(ctx, "user", globalUserID)
+	if err != nil {
+		t.Fatalf("list scope grants: %v", err)
+	}
+	if len(grants) == 0 {
+		t.Fatal("expected scope grant")
+	}
+	allowed, err := db.HasScopedPermission(ctx, "user", globalUserID, "project", "PR-000123", "projects.task.read")
+	if err != nil {
+		t.Fatalf("check scoped permission: %v", err)
+	}
+	if !allowed {
+		t.Fatal("expected scoped permission to be allowed")
 	}
 
 	entity, err := db.CreateGlobalEntity(ctx, "client", "test", "source-"+suffix, "", map[string]any{"test": true})
