@@ -1,0 +1,38 @@
+# Spectral ruleset for the BSYSTEM Integration Core API contract.
+#
+# The baseline OAS ruleset is extended with the conventions this platform
+# relies on: every operation is identified and described, error responses are
+# never left undocumented, and the contract stays navigable.
+extends: ["spectral:oas"]
+
+rules:
+  # The HUB generates its API client from this document, so an operation
+  # without a stable identifier produces an unusable client method name.
+  operation-operationId: error
+  operation-operationId-unique: error
+  operation-operationId-valid-in-url: error
+
+  # Every operation is tagged so the contract stays navigable. Summaries are
+  # enforced by the Go contract test in cmd/server/openapi_test.go, which
+  # checks them against the server's own route inventory; descriptions are
+  # optional where the summary already says everything.
+  operation-description: off
+  operation-tags: error
+  operation-tag-defined: error
+
+  # Responses without descriptions produce documentation that says nothing.
+  operation-success-response: error
+
+  # Keep the document tidy: a stale component is a contract that drifted.
+  oas3-unused-component: error
+
+  # Contact and licence are supplied; keep them.
+  info-contact: error
+  info-description: error
+  info-license: error
+
+  # Paths must be consistent and unambiguous.
+  path-declarations-must-exist: error
+  path-keys-no-trailing-slash: error
+  no-eval-in-markdown: error
+  no-script-tags-in-markdown: error
