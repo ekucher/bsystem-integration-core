@@ -5,10 +5,13 @@ import (
 	"encoding/json"
 	"log"
 	"net/http"
+	"os"
 	"strings"
 	"time"
 
 	"github.com/ekucher/bsystem-integration-core/internal/adapters"
+	"github.com/ekucher/bsystem-integration-core/internal/adapters/espocrm"
+	"github.com/ekucher/bsystem-integration-core/internal/adapters/redmine"
 	"github.com/ekucher/bsystem-integration-core/internal/events"
 	"github.com/ekucher/bsystem-integration-core/internal/platformdb"
 )
@@ -31,14 +34,29 @@ const (
 var adapterRegistry = adapters.NewRegistry()
 
 func init() {
-	planned := []adapters.Mock{
-		{AdapterInfo: adapters.Info{ID: "espocrm", Name: "EspoCRM", Version: "0", Status: adapters.StatusDisabled, Capabilities: []string{"clients.read", "contacts.read"}}, AdapterHealth: adapters.Health{Status: adapters.StatusDisabled, Message: "not configured"}},
-		{AdapterInfo: adapters.Info{ID: "redmine", Name: "Redmine", Version: "0", Status: adapters.StatusDisabled, Capabilities: []string{"projects.read", "issues.read"}}, AdapterHealth: adapters.Health{Status: adapters.StatusDisabled, Message: "not configured"}},
-		{AdapterInfo: adapters.Info{ID: "outline", Name: "Outline", Version: "0", Status: adapters.StatusDisabled, Capabilities: []string{"documents.read"}}, AdapterHealth: adapters.Health{Status: adapters.StatusDisabled, Message: "not configured"}},
+	if rawURL := strings.TrimSpace(os.Getenv("ESPOCRM_URL")); rawURL != "" {
+		client, err := espocrm.New(rawURL, os.Getenv("ESPOCRM_API_KEY"), 10*time.Second)
+		if err != nil {
+			log.Printf("EspoCRM adapter disabled: %v", err)
+		} else {
+			_ = adapterRegistry.Register(client)
+		}
+	} else {
+		_ = adapterRegistry.Register(adapters.Mock{AdapterInfo: adapters.Info{ID: "espocrm", Name: "EspoCRM", Version: "0", Status: adapters.StatusDisabled, Capabilities: []string{"clients.read", "contacts.read"}}, AdapterHealth: adapters.Health{Status: adapters.StatusDisabled, Message: "not configured"}})
 	}
-	for _, adapter := range planned {
-		_ = adapterRegistry.Register(adapter)
+
+	if rawURL := strings.TrimSpace(os.Getenv("REDMINE_URL")); rawURL != "" {
+		client, err := redmine.New(rawURL, os.Getenv("REDMINE_API_KEY"), 10*time.Second)
+		if err != nil {
+			log.Printf("Redmine adapter disabled: %v", err)
+		} else {
+			_ = adapterRegistry.Register(client)
+		}
+	} else {
+		_ = adapterRegistry.Register(adapters.Mock{AdapterInfo: adapters.Info{ID: "redmine", Name: "Redmine", Version: "0", Status: adapters.StatusDisabled, Capabilities: []string{"projects.read", "issues.read"}}, AdapterHealth: adapters.Health{Status: adapters.StatusDisabled, Message: "not configured"}})
 	}
+
+	_ = adapterRegistry.Register(adapters.Mock{AdapterInfo: adapters.Info{ID: "outline", Name: "Outline", Version: "0", Status: adapters.StatusDisabled, Capabilities: []string{"documents.read"}}, AdapterHealth: adapters.Health{Status: adapters.StatusDisabled, Message: "not configured"}})
 }
 
 func hasString(values []string, expected string) bool {
