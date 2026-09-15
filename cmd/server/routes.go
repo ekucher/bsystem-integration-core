@@ -88,6 +88,7 @@ func routes() []route {
 // accidentally be registered unauthenticated or unauthorized.
 func (a *app) handler() http.Handler {
 	mux := http.NewServeMux()
+	observer := a.observer()
 	for _, r := range routes() {
 		handler := http.Handler(r.Handler(a))
 		// Authorization wraps the handler first so that it runs after
@@ -103,7 +104,10 @@ func (a *app) handler() http.Handler {
 		case authService:
 			handler = a.authenticateService(handler)
 		}
-		mux.Handle(r.Pattern(), handler)
+		// Logging and metrics wrap the outside, so they observe the request
+		// even when authentication or authorization refuses it. A rejected
+		// request is exactly the one an operator needs to see.
+		mux.Handle(r.Pattern(), observer.Observe(r.Pattern(), handler))
 	}
 	return requestID(mux)
 }

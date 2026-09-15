@@ -3,7 +3,6 @@ package main
 import (
 	"context"
 	"errors"
-	"log"
 	"net/http"
 	"strconv"
 	"strings"
@@ -121,7 +120,7 @@ func writeCollection[T any](w http.ResponseWriter, items []T, info adapters.Page
 	})
 }
 func upstreamFailure(w http.ResponseWriter, adapter string, err error) {
-	log.Printf("%s upstream request failed: %v", adapter, err)
+	logger.Error("upstream request failed", "source", adapter, "error", err.Error())
 	writeJSON(w, http.StatusBadGateway, map[string]string{"error": "upstream service unavailable", "code": "upstream_unavailable", "source": adapter})
 }
 
@@ -149,7 +148,7 @@ func adapterFor[T any](w http.ResponseWriter, id, name string) (T, bool) {
 func (a *app) mapGlobalID(w http.ResponseWriter, r *http.Request, entityType, source, sourceID string, metadata map[string]any) (string, bool) {
 	entity, err := a.db.CreateGlobalEntity(r.Context(), entityType, source, sourceID, "", metadata)
 	if err != nil {
-		log.Printf("Global ID mapping failed for %s/%s: %v", source, entityType, err)
+		logger.ErrorContext(r.Context(), "Global ID mapping failed", "source", source, "entity_type", entityType, "error", err.Error())
 		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "Global ID mapping failed"})
 		return "", false
 	}
@@ -358,7 +357,7 @@ func (a *app) resolveScopedEntity(w http.ResponseWriter, r *http.Request, entity
 
 	decision, err := a.authz.Evaluate(r.Context(), principal, permission, authz.Resource(scopeType, entity.GlobalID))
 	if err != nil {
-		log.Printf("authorization evaluation failed: %v", err)
+		logger.ErrorContext(r.Context(), "authorization evaluation failed", "error", err.Error())
 		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "authorization store unavailable"})
 		return platformdb.GlobalEntity{}, false
 	}

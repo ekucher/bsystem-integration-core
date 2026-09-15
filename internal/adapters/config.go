@@ -26,4 +26,20 @@ type Config struct {
 	CircuitFailureThreshold int
 	// CircuitOpenFor is how long the circuit sheds load before probing.
 	CircuitOpenFor time.Duration
+	// Recorder observes upstream attempts. Optional.
+	Recorder Recorder
+}
+
+// Recorder receives the outcome of every upstream attempt, so that adapter
+// behaviour is visible without the transport depending on how the platform
+// stores its observations.
+//
+// The failure kind is a plain string rather than the transport's own type,
+// so that a recorder can be written without importing the transport.
+type Recorder interface {
+	// Attempt records one completed attempt: the failure kind (empty when it
+	// succeeded), whether it was a retry, and how long it took.
+	Attempt(adapter string, kind string, retry bool, seconds float64)
+	// CircuitRejected records a call the breaker refused to make.
+	CircuitRejected(adapter string)
 }

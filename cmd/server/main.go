@@ -103,7 +103,7 @@ func (a *app) authorize(permission string, next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		decision, err := a.authz.Evaluate(r.Context(), principalFrom(r.Context()), permission, authz.Global())
 		if err != nil {
-			log.Printf("authorization evaluation failed: %v", err)
+			logger.ErrorContext(r.Context(), "authorization evaluation failed", "error", err.Error())
 			writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "authorization store unavailable"})
 			return
 		}
@@ -121,7 +121,7 @@ func (a *app) authorize(permission string, next http.Handler) http.Handler {
 func (a *app) authorizeResource(w http.ResponseWriter, r *http.Request, permission, scopeType, scopeID string) bool {
 	decision, err := a.authz.Evaluate(r.Context(), principalFrom(r.Context()), permission, authz.Resource(scopeType, scopeID))
 	if err != nil {
-		log.Printf("authorization evaluation failed: %v", err)
+		logger.ErrorContext(r.Context(), "authorization evaluation failed", "error", err.Error())
 		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "authorization store unavailable"})
 		return false
 	}
@@ -189,7 +189,7 @@ func (a *app) authenticate(next http.Handler) http.Handler {
 		}
 		info, err := fetchUserInfo(r.Context(), strings.TrimPrefix(header, "Bearer "))
 		if err != nil {
-			log.Printf("authentication failed: %v", err)
+			logger.WarnContext(r.Context(), "authentication failed", "error", err.Error())
 			writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "invalid or expired token"})
 			return
 		}
@@ -201,7 +201,7 @@ func (a *app) authenticate(next http.Handler) http.Handler {
 			Subject: info.Sub, Email: info.Email, DisplayName: info.Name, Username: username, Groups: unique(info.Groups),
 		})
 		if err != nil {
-			log.Printf("identity persistence failed: %v", err)
+			logger.ErrorContext(r.Context(), "identity persistence failed", "error", err.Error())
 			writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "identity persistence unavailable"})
 			return
 		}
@@ -212,7 +212,7 @@ func (a *app) authenticate(next http.Handler) http.Handler {
 		// single request cannot observe two different authorization states.
 		access, err := a.resolveAccess(r.Context(), info, globalUserID)
 		if err != nil {
-			log.Printf("RBAC resolution failed: %v", err)
+			logger.ErrorContext(r.Context(), "RBAC resolution failed", "error", err.Error())
 			writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "RBAC store unavailable"})
 			return
 		}
@@ -277,21 +277,32 @@ func sourceIP(r *http.Request) string {
 func (a *app) audit(r *http.Request, access meResponse, action, resourceType, resourceID string, metadata map[string]any) {
 	err := a.db.InsertAudit(r.Context(), platformdb.AuditEvent{Subject: access.Subject, GlobalUserID: access.ID, Action: action, ResourceType: resourceType, ResourceID: resourceID, RequestID: requestIDFrom(r.Context()), SourceIP: sourceIP(r), Metadata: metadata})
 	if err != nil {
-		log.Printf("audit write failed: %v", err)
+		logger.ErrorContext(r.Context(), "audit write failed", "error", err.Error())
 	}
 }
 
+// publish sends a platform event, recording the outcome.
+//
+// The outcome is counted rather than only logged, because "no events" and
+// "every event failed to publish" look identical on a dashboard that only
+// counts successes.
 func (a *app) publish(subject string, payload any) {
 	if a.nc == nil {
+		eventsPublished.Inc(subject, "unavailable")
 		return
 	}
 	body, err := json.Marshal(payload)
 	if err != nil {
+		eventsPublished.Inc(subject, "encode_failed")
+		logger.Error("event could not be encoded", "subject", subject, "error", err.Error())
 		return
 	}
 	if err := a.nc.Publish(subject, body); err != nil {
-		log.Printf("NATS publish %s failed: %v", subject, err)
+		eventsPublished.Inc(subject, "failed")
+		logger.Error("event publication failed", "subject", subject, "error", err.Error())
+		return
 	}
+	eventsPublished.Inc(subject, "published")
 }
 
 func (a *app) health(w http.ResponseWriter, r *http.Request) {
@@ -401,19 +412,20 @@ func main() {
 	if natsURL := os.Getenv("NATS_URL"); natsURL != "" {
 		nc, err = nats.Connect(natsURL, nats.Name("bsystem-integration-core"), nats.Timeout(5*time.Second), nats.MaxReconnects(-1))
 		if err != nil {
-			log.Printf("NATS unavailable at startup: %v", err)
+			logger.Warn("NATS unavailable at startup", "error", err.Error())
 			nc = nil
 		} else {
 			defer nc.Close()
 		}
 	}
 	a := &app{db: db, nc: nc, authz: authz.New(db, authz.DefaultConfinedRoles())}
+	a.registerPlatformMetrics()
 
 	addr := os.Getenv("HTTP_ADDR")
 	if addr == "" {
 		addr = ":8080"
 	}
 	server := &http.Server{Addr: addr, Handler: a.handler(), ReadHeaderTimeout: 5 * time.Second, ReadTimeout: 15 * time.Second, WriteTimeout: 15 * time.Second, IdleTimeout: 60 * time.Second}
-	log.Printf("bsystem-integration-core v0.5.0 listening on %s", addr)
+	logger.Info("bsystem-integration-core listening", "version", "0.5.0", "addr", addr)
 	log.Fatal(server.ListenAndServe())
 }

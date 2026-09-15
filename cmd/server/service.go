@@ -3,7 +3,6 @@ package main
 import (
 	"context"
 	"encoding/json"
-	"log"
 	"net/http"
 	"os"
 	"strconv"
@@ -42,6 +41,7 @@ var adapterRegistry = adapters.NewRegistry()
 // circuit window so recovery is observable within a test run.
 func adapterResilience() adapters.Config {
 	return adapters.Config{
+		Recorder:                upstream,
 		Timeout:                 durationEnv("ADAPTER_TIMEOUT", 10*time.Second),
 		RetryAttempts:           intEnv("ADAPTER_RETRY_ATTEMPTS", 0),
 		CircuitFailureThreshold: intEnv("ADAPTER_CIRCUIT_FAILURE_THRESHOLD", 0),
@@ -82,7 +82,7 @@ func init() {
 	config.BaseURL, config.APIKey = strings.TrimSpace(os.Getenv("ESPOCRM_URL")), os.Getenv("ESPOCRM_API_KEY")
 	if config.BaseURL != "" {
 		if client, err := espocrm.New(config); err != nil {
-			log.Printf("EspoCRM adapter disabled: %v", err)
+			logger.Warn("adapter disabled", "adapter", "espocrm", "error", err.Error())
 		} else {
 			_ = adapterRegistry.Register(client)
 		}
@@ -95,7 +95,7 @@ func init() {
 	config.BaseURL, config.APIKey = strings.TrimSpace(os.Getenv("REDMINE_URL")), os.Getenv("REDMINE_API_KEY")
 	if config.BaseURL != "" {
 		if client, err := redmine.New(config); err != nil {
-			log.Printf("Redmine adapter disabled: %v", err)
+			logger.Warn("adapter disabled", "adapter", "redmine", "error", err.Error())
 		} else {
 			_ = adapterRegistry.Register(client)
 		}
@@ -108,7 +108,7 @@ func init() {
 	config.BaseURL, config.APIKey = strings.TrimSpace(os.Getenv("OUTLINE_URL")), os.Getenv("OUTLINE_API_KEY")
 	if config.BaseURL != "" {
 		if client, err := outline.New(config); err != nil {
-			log.Printf("Outline adapter disabled: %v", err)
+			logger.Warn("adapter disabled", "adapter", "outline", "error", err.Error())
 		} else {
 			_ = adapterRegistry.Register(client)
 		}
@@ -136,7 +136,7 @@ func (a *app) authenticateService(next http.Handler) http.Handler {
 		}
 		info, err := fetchUserInfo(r.Context(), strings.TrimPrefix(header, "Bearer "))
 		if err != nil {
-			log.Printf("service authentication failed: %v", err)
+			logger.WarnContext(r.Context(), "service authentication failed", "error", err.Error())
 			writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "invalid or expired token"})
 			return
 		}
@@ -155,7 +155,7 @@ func (a *app) authenticateService(next http.Handler) http.Handler {
 		groups := unique(info.Groups)
 		globalID, created, err := a.db.EnsureServiceIdentity(r.Context(), platformdb.ServiceIdentity{Subject: info.Sub, Name: name, Username: username, Groups: groups})
 		if err != nil {
-			log.Printf("service identity persistence failed: %v", err)
+			logger.ErrorContext(r.Context(), "service identity persistence failed", "error", err.Error())
 			writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "service identity persistence unavailable"})
 			return
 		}
@@ -164,7 +164,7 @@ func (a *app) authenticateService(next http.Handler) http.Handler {
 		}
 		profile, err := a.db.ResolveAccess(r.Context(), groups, "service")
 		if err != nil {
-			log.Printf("service RBAC resolution failed: %v", err)
+			logger.ErrorContext(r.Context(), "service RBAC resolution failed", "error", err.Error())
 			writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "RBAC store unavailable"})
 			return
 		}

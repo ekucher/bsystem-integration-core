@@ -56,6 +56,8 @@ type Options struct {
 	Breaker      BreakerSettings
 	// Transport is injectable for tests.
 	Transport http.RoundTripper
+	// Recorder observes attempts. Optional.
+	Recorder adapters.Recorder
 }
 
 // Client performs bounded, retrying, circuit-broken JSON calls to one
@@ -67,6 +69,7 @@ type Client struct {
 	maxBodyBytes int64
 	retry        RetryPolicy
 	breaker      *Breaker
+	recorder     adapters.Recorder
 }
 
 const (
@@ -123,6 +126,7 @@ func New(options Options) (*Client, error) {
 		maxBodyBytes: options.MaxBodyBytes,
 		retry:        options.Retry,
 		breaker:      NewBreaker(options.Breaker),
+		recorder:     options.Recorder,
 	}, nil
 }
 
@@ -156,6 +160,9 @@ func (c *Client) BreakerStats() Stats { return c.breaker.Stats() }
 // plausibly succeed on another attempt, and only within the policy's bounds.
 func (c *Client) Do(ctx context.Context, request Request, out any) error {
 	if !c.breaker.Allow() {
+		if c.recorder != nil {
+			c.recorder.CircuitRejected(c.adapter)
+		}
 		return &Error{Adapter: c.adapter, Kind: KindCircuitOpen}
 	}
 
@@ -166,7 +173,10 @@ func (c *Client) Do(ctx context.Context, request Request, out any) error {
 
 	var lastErr error
 	for attempt := 1; attempt <= attempts; attempt++ {
+		started := time.Now()
 		err := c.attempt(ctx, request, out)
+		c.record(err, attempt > 1, time.Since(started))
+
 		if err == nil {
 			c.breaker.Succeed()
 			return nil
@@ -191,6 +201,21 @@ func (c *Client) Do(ctx context.Context, request Request, out any) error {
 
 	c.breaker.Fail(true)
 	return lastErr
+}
+
+// record reports one attempt's outcome, if anything is listening.
+func (c *Client) record(err error, retry bool, elapsed time.Duration) {
+	if c.recorder == nil {
+		return
+	}
+	kind := Kind("")
+	var upstream *Error
+	if errors.As(err, &upstream) {
+		kind = upstream.Kind
+	} else if err != nil {
+		kind = KindUnavailable
+	}
+	c.recorder.Attempt(c.adapter, string(kind), retry, elapsed.Seconds())
 }
 
 // backoff is exponential with full jitter, capped by MaxDelay.
@@ -357,6 +382,7 @@ func OptionsFor(adapter string, config adapters.Config) Options {
 		MaxBodyBytes: config.MaxBodyBytes,
 		Retry:        DefaultRetryPolicy(),
 		Breaker:      DefaultBreakerSettings(),
+		Recorder:     config.Recorder,
 	}
 	if config.RetryAttempts > 0 {
 		options.Retry.MaxAttempts = config.RetryAttempts

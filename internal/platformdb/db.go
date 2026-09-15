@@ -235,3 +235,31 @@ func (db *DB) ListAudit(ctx context.Context, limit int) ([]AuditEvent, error) {
 	}
 	return result, rows.Err()
 }
+
+// PoolStats describes the connection pool, for metrics.
+//
+// It is read from the pool at scrape time rather than mirrored into counters,
+// because a mirrored value drifts out of date exactly when it matters.
+type PoolStats struct {
+	Acquired          int32
+	Idle              int32
+	Total             int32
+	Max               int32
+	AcquireCount      int64
+	EmptyAcquireCount int64
+	CanceledAcquire   int64
+}
+
+// Stats returns a snapshot of the connection pool.
+func (db *DB) Stats() PoolStats {
+	stat := db.pool.Stat()
+	return PoolStats{
+		Acquired:          stat.AcquiredConns(),
+		Idle:              stat.IdleConns(),
+		Total:             stat.TotalConns(),
+		Max:               stat.MaxConns(),
+		AcquireCount:      stat.AcquireCount(),
+		EmptyAcquireCount: stat.EmptyAcquireCount(),
+		CanceledAcquire:   stat.CanceledAcquireCount(),
+	}
+}
