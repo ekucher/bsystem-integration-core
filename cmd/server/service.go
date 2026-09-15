@@ -37,7 +37,7 @@ func init() {
 	}
 }
 
-func contains(values []string, expected string) bool {
+func hasString(values []string, expected string) bool {
 	for _, value := range values {
 		if value == expected {
 			return true
@@ -60,7 +60,7 @@ func (a *app) authenticateService(next http.Handler) http.Handler {
 			writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "invalid or expired token"})
 			return
 		}
-		if !contains(info.Groups, serviceGroup) {
+		if !hasString(info.Groups, serviceGroup) {
 			writeJSON(w, http.StatusForbidden, map[string]string{"error": "service identity group required"})
 			return
 		}
