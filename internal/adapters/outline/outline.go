@@ -29,12 +29,18 @@ type Document struct {
 	UpdatedAt    string `json:"updatedAt,omitempty"`
 }
 
+// rpcResponse is the Outline RPC envelope. Every method returns its result
+// under "data"; collection methods return an array there and add "pagination"
+// alongside it.
 type rpcResponse[T any] struct {
-	Data T `json:"data"`
+	Data       T          `json:"data"`
+	Pagination pagination `json:"pagination"`
 }
 
-type documentListData struct {
-	Documents []Document `json:"documents"`
+type pagination struct {
+	Offset int `json:"offset"`
+	Limit  int `json:"limit"`
+	Total  int `json:"total"`
 }
 
 func New(rawURL, apiKey string, timeout time.Duration) (*Client, error) {
@@ -60,7 +66,7 @@ func (c *Client) Info() adapters.Info {
 }
 
 func (c *Client) Health(ctx context.Context) adapters.Health {
-	var out rpcResponse[documentListData]
+	var out rpcResponse[[]Document]
 	if err := c.rpc(ctx, "documents.list", map[string]any{"limit": 1}, &out); err != nil {
 		return adapters.Health{Status: adapters.StatusDegraded, Message: err.Error()}
 	}
@@ -71,11 +77,11 @@ func (c *Client) ListDocuments(ctx context.Context, limit int) ([]Document, erro
 	if limit <= 0 || limit > 100 {
 		limit = 50
 	}
-	var out rpcResponse[documentListData]
+	var out rpcResponse[[]Document]
 	if err := c.rpc(ctx, "documents.list", map[string]any{"limit": limit}, &out); err != nil {
 		return nil, err
 	}
-	return out.Data.Documents, nil
+	return out.Data, nil
 }
 
 func (c *Client) GetDocument(ctx context.Context, id string) (Document, error) {

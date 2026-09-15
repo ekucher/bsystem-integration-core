@@ -5,41 +5,198 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 )
 
-func TestListAndGetDocument(t *testing.T) {
+// documentsListBody is the envelope Outline actually returns from
+// documents.list: "data" is an array of documents, with paging metadata
+// alongside it rather than nested inside it.
+const documentsListBody = `{"data":[{"id":"doc-1","title":"Runbook","collectionId":"col-1","updatedAt":"2026-01-06T11:30:00.000Z"},{"id":"doc-2","title":"Onboarding","collectionId":"col-1"}],"pagination":{"offset":0,"limit":2,"total":2}}`
+
+func newTestClient(t *testing.T, mux *http.ServeMux) *Client {
+	t.Helper()
+	server := httptest.NewServer(mux)
+	t.Cleanup(server.Close)
+	client, err := New(server.URL, "test-outline-key", time.Second)
+	if err != nil {
+		t.Fatalf("build client: %v", err)
+	}
+	return client
+}
+
+func TestListDocuments(t *testing.T) {
+	var receivedLimit float64
 	mux := http.NewServeMux()
 	mux.HandleFunc("/api/documents.list", func(w http.ResponseWriter, r *http.Request) {
-		if r.Header.Get("Authorization") != "Bearer secret" {
-			t.Fatalf("missing bearer auth")
+		if r.Header.Get("Authorization") != "Bearer test-outline-key" {
+			t.Errorf("missing or wrong bearer credential")
 		}
 		var body map[string]any
-		_ = json.NewDecoder(r.Body).Decode(&body)
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Errorf("decode request body: %v", err)
+		}
+		receivedLimit, _ = body["limit"].(float64)
 		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write([]byte(`{"data":{"documents":[{"id":"doc-1","title":"Runbook","collectionId":"col-1"}]}}`))
+		_, _ = w.Write([]byte(documentsListBody))
 	})
-	mux.HandleFunc("/api/documents.info", func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write([]byte(`{"data":{"id":"doc-1","title":"Runbook","text":"hello"}}`))
-	})
-	server := httptest.NewServer(mux)
-	defer server.Close()
 
-	client, err := New(server.URL, "secret", time.Second)
+	client := newTestClient(t, mux)
+	documents, err := client.ListDocuments(context.Background(), 2)
 	if err != nil {
-		t.Fatal(err)
+		t.Fatalf("list documents: %v", err)
 	}
-	if health := client.Health(context.Background()); health.Status != "ready" {
-		t.Fatalf("unexpected health: %#v", health)
+	if len(documents) != 2 {
+		t.Fatalf("returned %d documents, want 2", len(documents))
 	}
-	docs, err := client.ListDocuments(context.Background(), 10)
-	if err != nil || len(docs) != 1 || docs[0].Title != "Runbook" {
-		t.Fatalf("unexpected docs: %#v err=%v", docs, err)
+	if documents[0].ID != "doc-1" || documents[0].Title != "Runbook" || documents[0].CollectionID != "col-1" {
+		t.Fatalf("unexpected first document: %#v", documents[0])
 	}
-	doc, err := client.GetDocument(context.Background(), "doc-1")
-	if err != nil || doc.Text != "hello" {
-		t.Fatalf("unexpected doc: %#v err=%v", doc, err)
+	if documents[0].UpdatedAt == "" {
+		t.Error("updatedAt must be preserved; the normalized API exposes it")
+	}
+	if receivedLimit != 2 {
+		t.Fatalf("limit sent upstream = %v, want 2", receivedLimit)
+	}
+}
+
+func TestListDocumentsBoundsTheLimit(t *testing.T) {
+	tests := []struct {
+		name      string
+		limit     int
+		wantLimit float64
+	}{
+		{name: "zero falls back", limit: 0, wantLimit: 50},
+		{name: "negative falls back", limit: -5, wantLimit: 50},
+		{name: "in range is kept", limit: 10, wantLimit: 10},
+		{name: "above the cap falls back", limit: 5000, wantLimit: 50},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			var received float64
+			mux := http.NewServeMux()
+			mux.HandleFunc("/api/documents.list", func(w http.ResponseWriter, r *http.Request) {
+				var body map[string]any
+				_ = json.NewDecoder(r.Body).Decode(&body)
+				received, _ = body["limit"].(float64)
+				_, _ = w.Write([]byte(`{"data":[],"pagination":{"offset":0,"limit":0,"total":0}}`))
+			})
+			client := newTestClient(t, mux)
+			if _, err := client.ListDocuments(context.Background(), test.limit); err != nil {
+				t.Fatalf("list documents: %v", err)
+			}
+			if received != test.wantLimit {
+				t.Fatalf("limit sent upstream = %v, want %v", received, test.wantLimit)
+			}
+		})
+	}
+}
+
+func TestGetDocument(t *testing.T) {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/api/documents.info", func(w http.ResponseWriter, r *http.Request) {
+		var body map[string]any
+		_ = json.NewDecoder(r.Body).Decode(&body)
+		if body["id"] != "doc-1" {
+			http.Error(w, `{"error":"not found"}`, http.StatusNotFound)
+			return
+		}
+		_, _ = w.Write([]byte(`{"data":{"id":"doc-1","title":"Runbook","text":"hello","collectionId":"col-1"}}`))
+	})
+	client := newTestClient(t, mux)
+
+	document, err := client.GetDocument(context.Background(), "doc-1")
+	if err != nil {
+		t.Fatalf("get document: %v", err)
+	}
+	if document.Text != "hello" || document.Title != "Runbook" {
+		t.Fatalf("unexpected document: %#v", document)
+	}
+
+	if _, err := client.GetDocument(context.Background(), ""); err == nil {
+		t.Fatal("an empty document id must be rejected before the upstream call")
+	}
+	if _, err := client.GetDocument(context.Background(), "doc-missing"); err == nil {
+		t.Fatal("an upstream 404 must surface as an error")
+	}
+}
+
+func TestHealth(t *testing.T) {
+	tests := []struct {
+		name       string
+		handler    http.HandlerFunc
+		wantStatus string
+	}{
+		{
+			name:       "ready",
+			handler:    func(w http.ResponseWriter, _ *http.Request) { _, _ = w.Write([]byte(documentsListBody)) },
+			wantStatus: "ready",
+		},
+		{
+			name:       "upstream rejects the credential",
+			handler:    func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusUnauthorized) },
+			wantStatus: "degraded",
+		},
+		{
+			name:       "upstream is rate limiting",
+			handler:    func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusTooManyRequests) },
+			wantStatus: "degraded",
+		},
+		{
+			name:       "upstream returns an unreadable body",
+			handler:    func(w http.ResponseWriter, _ *http.Request) { _, _ = w.Write([]byte(`{"data":`)) },
+			wantStatus: "degraded",
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			mux := http.NewServeMux()
+			mux.HandleFunc("/api/documents.list", test.handler)
+			health := newTestClient(t, mux).Health(context.Background())
+			if string(health.Status) != test.wantStatus {
+				t.Fatalf("status = %q, want %q (%s)", health.Status, test.wantStatus, health.Message)
+			}
+		})
+	}
+}
+
+// An upstream failure must never surface the API key, because the adapter
+// error text reaches logs and, in normalized form, the platform boundary.
+func TestErrorsDoNotLeakTheCredential(t *testing.T) {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/api/documents.list", func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusInternalServerError)
+	})
+	client := newTestClient(t, mux)
+	_, err := client.ListDocuments(context.Background(), 10)
+	if err == nil {
+		t.Fatal("an upstream 500 must surface as an error")
+	}
+	if strings.Contains(err.Error(), "test-outline-key") {
+		t.Fatalf("adapter error leaked the credential: %v", err)
+	}
+}
+
+func TestNewValidatesConfiguration(t *testing.T) {
+	tests := []struct {
+		name    string
+		url     string
+		apiKey  string
+		wantErr bool
+	}{
+		{name: "valid", url: "https://outline.example.invalid", apiKey: "k"},
+		{name: "trailing slash is trimmed", url: "https://outline.example.invalid/", apiKey: "k"},
+		{name: "empty url", url: "", apiKey: "k", wantErr: true},
+		{name: "url without a scheme", url: "outline.example.invalid", apiKey: "k", wantErr: true},
+		{name: "missing api key", url: "https://outline.example.invalid", apiKey: "", wantErr: true},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			_, err := New(test.url, test.apiKey, time.Second)
+			if test.wantErr != (err != nil) {
+				t.Fatalf("New() error = %v, wantErr = %v", err, test.wantErr)
+			}
+		})
 	}
 }
