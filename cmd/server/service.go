@@ -11,6 +11,7 @@ import (
 
 	"github.com/ekucher/bsystem-integration-core/internal/adapters"
 	"github.com/ekucher/bsystem-integration-core/internal/adapters/espocrm"
+	"github.com/ekucher/bsystem-integration-core/internal/adapters/outline"
 	"github.com/ekucher/bsystem-integration-core/internal/adapters/redmine"
 	"github.com/ekucher/bsystem-integration-core/internal/events"
 	"github.com/ekucher/bsystem-integration-core/internal/platformdb"
@@ -56,7 +57,16 @@ func init() {
 		_ = adapterRegistry.Register(adapters.Mock{AdapterInfo: adapters.Info{ID: "redmine", Name: "Redmine", Version: "0", Status: adapters.StatusDisabled, Capabilities: []string{"projects.read", "issues.read"}}, AdapterHealth: adapters.Health{Status: adapters.StatusDisabled, Message: "not configured"}})
 	}
 
-	_ = adapterRegistry.Register(adapters.Mock{AdapterInfo: adapters.Info{ID: "outline", Name: "Outline", Version: "0", Status: adapters.StatusDisabled, Capabilities: []string{"documents.read"}}, AdapterHealth: adapters.Health{Status: adapters.StatusDisabled, Message: "not configured"}})
+	if rawURL := strings.TrimSpace(os.Getenv("OUTLINE_URL")); rawURL != "" {
+		client, err := outline.New(rawURL, os.Getenv("OUTLINE_API_KEY"), 10*time.Second)
+		if err != nil {
+			log.Printf("Outline adapter disabled: %v", err)
+		} else {
+			_ = adapterRegistry.Register(client)
+		}
+	} else {
+		_ = adapterRegistry.Register(adapters.Mock{AdapterInfo: adapters.Info{ID: "outline", Name: "Outline", Version: "0", Status: adapters.StatusDisabled, Capabilities: []string{"documents.read"}}, AdapterHealth: adapters.Health{Status: adapters.StatusDisabled, Message: "not configured"}})
+	}
 }
 
 func hasString(values []string, expected string) bool {
