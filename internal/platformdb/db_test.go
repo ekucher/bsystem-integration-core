@@ -39,6 +39,22 @@ func TestPersistenceLifecycle(t *testing.T) {
 		t.Fatalf("identity Global ID is not stable: first=%q second=%q created=%v", globalUserID, again, createdAgain)
 	}
 
+	serviceSubject := "service-subject-" + suffix
+	globalServiceID, serviceCreated, err := db.EnsureServiceIdentity(ctx, ServiceIdentity{Subject: serviceSubject, Name: "CI Service", Username: "svc-ci", Groups: []string{"BSYSTEM-Services"}})
+	if err != nil {
+		t.Fatalf("ensure service identity: %v", err)
+	}
+	if !serviceCreated || !strings.HasPrefix(globalServiceID, "SVC-") {
+		t.Fatalf("unexpected service identity allocation: id=%q created=%v", globalServiceID, serviceCreated)
+	}
+	serviceAgain, serviceCreatedAgain, err := db.EnsureServiceIdentity(ctx, ServiceIdentity{Subject: serviceSubject, Name: "CI Service Renamed", Username: "svc-ci", Groups: []string{"BSYSTEM-Services"}})
+	if err != nil {
+		t.Fatalf("ensure service identity second time: %v", err)
+	}
+	if serviceCreatedAgain || serviceAgain != globalServiceID {
+		t.Fatalf("service Global ID is not stable: first=%q second=%q created=%v", globalServiceID, serviceAgain, serviceCreatedAgain)
+	}
+
 	entity, err := db.CreateGlobalEntity(ctx, "client", "test", "source-"+suffix, "", map[string]any{"test": true})
 	if err != nil {
 		t.Fatalf("create Global ID: %v", err)
