@@ -79,7 +79,7 @@ func Open(ctx context.Context, databaseURL string) (*DB, error) {
 	return db, nil
 }
 
-func (db *DB) Close() { db.pool.Close() }
+func (db *DB) Close()                         { db.pool.Close() }
 func (db *DB) Ping(ctx context.Context) error { return db.pool.Ping(ctx) }
 
 func (db *DB) Migrate(ctx context.Context) error {
@@ -123,12 +123,16 @@ ON CONFLICT (subject) DO UPDATE SET
 
 func (db *DB) ListModules(ctx context.Context) ([]Module, error) {
 	rows, err := db.pool.Query(ctx, `SELECT id,name,description,status FROM modules WHERE enabled=TRUE ORDER BY sort_order,id`)
-	if err != nil { return nil, err }
+	if err != nil {
+		return nil, err
+	}
 	defer rows.Close()
 	var result []Module
 	for rows.Next() {
 		var item Module
-		if err := rows.Scan(&item.ID, &item.Name, &item.Description, &item.Status); err != nil { return nil, err }
+		if err := rows.Scan(&item.ID, &item.Name, &item.Description, &item.Status); err != nil {
+			return nil, err
+		}
 		result = append(result, item)
 	}
 	return result, rows.Err()
@@ -136,63 +140,81 @@ func (db *DB) ListModules(ctx context.Context) ([]Module, error) {
 
 func (db *DB) CreateGlobalEntity(ctx context.Context, entityType, source, sourceID, tenantID string, metadata map[string]any) (GlobalEntity, error) {
 	tx, err := db.pool.BeginTx(ctx, pgx.TxOptions{})
-	if err != nil { return GlobalEntity{}, err }
+	if err != nil {
+		return GlobalEntity{}, err
+	}
 	defer tx.Rollback(ctx)
 
 	var existing GlobalEntity
 	var existingMeta []byte
 	err = tx.QueryRow(ctx, `SELECT global_id,entity_type,source,source_id,COALESCE(tenant_id,''),metadata,created_at FROM global_entities WHERE source=$1 AND entity_type=$2 AND source_id=$3`, source, entityType, sourceID).
-		Scan(&existing.GlobalID,&existing.EntityType,&existing.Source,&existing.SourceID,&existing.TenantID,&existingMeta,&existing.CreatedAt)
+		Scan(&existing.GlobalID, &existing.EntityType, &existing.Source, &existing.SourceID, &existing.TenantID, &existingMeta, &existing.CreatedAt)
 	if err == nil {
 		_ = json.Unmarshal(existingMeta, &existing.Metadata)
 		return existing, tx.Commit(ctx)
 	}
-	if !errors.Is(err, pgx.ErrNoRows) { return GlobalEntity{}, err }
+	if !errors.Is(err, pgx.ErrNoRows) {
+		return GlobalEntity{}, err
+	}
 
 	var prefix string
 	var value int64
-	err = tx.QueryRow(ctx, `UPDATE global_id_counters SET next_value=next_value+1 WHERE entity_type=$1 RETURNING prefix,next_value-1`, entityType).Scan(&prefix,&value)
+	err = tx.QueryRow(ctx, `UPDATE global_id_counters SET next_value=next_value+1 WHERE entity_type=$1 RETURNING prefix,next_value-1`, entityType).Scan(&prefix, &value)
 	if err != nil {
-		if errors.Is(err, pgx.ErrNoRows) { return GlobalEntity{}, fmt.Errorf("unsupported entity_type %q", entityType) }
+		if errors.Is(err, pgx.ErrNoRows) {
+			return GlobalEntity{}, fmt.Errorf("unsupported entity_type %q", entityType)
+		}
 		return GlobalEntity{}, err
 	}
 	globalID := fmt.Sprintf("%s-%06d", prefix, value)
 	metaJSON, _ := json.Marshal(metadata)
 	var created time.Time
 	err = tx.QueryRow(ctx, `INSERT INTO global_entities (global_id,entity_type,source,source_id,tenant_id,metadata) VALUES ($1,$2,$3,$4,NULLIF($5,''),$6::jsonb) RETURNING created_at`, globalID, entityType, source, sourceID, tenantID, string(metaJSON)).Scan(&created)
-	if err != nil { return GlobalEntity{}, err }
-	if err := tx.Commit(ctx); err != nil { return GlobalEntity{}, err }
-	return GlobalEntity{GlobalID:globalID,EntityType:entityType,Source:source,SourceID:sourceID,TenantID:tenantID,Metadata:metadata,CreatedAt:created}, nil
+	if err != nil {
+		return GlobalEntity{}, err
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return GlobalEntity{}, err
+	}
+	return GlobalEntity{GlobalID: globalID, EntityType: entityType, Source: source, SourceID: sourceID, TenantID: tenantID, Metadata: metadata, CreatedAt: created}, nil
 }
 
 func (db *DB) ResolveGlobalEntity(ctx context.Context, globalID string) (GlobalEntity, error) {
 	var item GlobalEntity
 	var meta []byte
 	err := db.pool.QueryRow(ctx, `SELECT global_id,entity_type,source,source_id,COALESCE(tenant_id,''),metadata,created_at FROM global_entities WHERE global_id=$1`, globalID).
-		Scan(&item.GlobalID,&item.EntityType,&item.Source,&item.SourceID,&item.TenantID,&meta,&item.CreatedAt)
-	if err != nil { return GlobalEntity{}, err }
+		Scan(&item.GlobalID, &item.EntityType, &item.Source, &item.SourceID, &item.TenantID, &meta, &item.CreatedAt)
+	if err != nil {
+		return GlobalEntity{}, err
+	}
 	_ = json.Unmarshal(meta, &item.Metadata)
-	return item,nil
+	return item, nil
 }
 
 func (db *DB) InsertAudit(ctx context.Context, event AuditEvent) error {
 	metaJSON, _ := json.Marshal(event.Metadata)
-	_, err := db.pool.Exec(ctx, `INSERT INTO audit_events (subject,global_user_id,action,resource_type,resource_id,request_id,source_ip,metadata) VALUES ($1,$2,$3,$4,$5,$6,$7,$8::jsonb)`, event.Subject,event.GlobalUserID,event.Action,event.ResourceType,event.ResourceID,event.RequestID,event.SourceIP,string(metaJSON))
+	_, err := db.pool.Exec(ctx, `INSERT INTO audit_events (subject,global_user_id,action,resource_type,resource_id,request_id,source_ip,metadata) VALUES ($1,$2,$3,$4,$5,$6,$7,$8::jsonb)`, event.Subject, event.GlobalUserID, event.Action, event.ResourceType, event.ResourceID, event.RequestID, event.SourceIP, string(metaJSON))
 	return err
 }
 
-func (db *DB) ListAudit(ctx context.Context, limit int) ([]AuditEvent,error) {
-	if limit <= 0 || limit > 500 { limit = 100 }
+func (db *DB) ListAudit(ctx context.Context, limit int) ([]AuditEvent, error) {
+	if limit <= 0 || limit > 500 {
+		limit = 100
+	}
 	rows, err := db.pool.Query(ctx, `SELECT id,occurred_at,subject,global_user_id,action,resource_type,resource_id,request_id,source_ip,metadata FROM audit_events ORDER BY occurred_at DESC LIMIT $1`, limit)
-	if err != nil { return nil,err }
+	if err != nil {
+		return nil, err
+	}
 	defer rows.Close()
 	var result []AuditEvent
 	for rows.Next() {
 		var item AuditEvent
 		var meta []byte
-		if err := rows.Scan(&item.ID,&item.OccurredAt,&item.Subject,&item.GlobalUserID,&item.Action,&item.ResourceType,&item.ResourceID,&item.RequestID,&item.SourceIP,&meta); err != nil { return nil,err }
-		_ = json.Unmarshal(meta,&item.Metadata)
-		result = append(result,item)
+		if err := rows.Scan(&item.ID, &item.OccurredAt, &item.Subject, &item.GlobalUserID, &item.Action, &item.ResourceType, &item.ResourceID, &item.RequestID, &item.SourceIP, &meta); err != nil {
+			return nil, err
+		}
+		_ = json.Unmarshal(meta, &item.Metadata)
+		result = append(result, item)
 	}
-	return result,rows.Err()
+	return result, rows.Err()
 }

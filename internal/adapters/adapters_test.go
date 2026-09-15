@@ -8,7 +8,7 @@ import (
 func TestRegistry(t *testing.T) {
 	registry := NewRegistry()
 	adapter := Mock{
-		AdapterInfo: Info{ID: "test", Name: "Test Adapter", Version: "1.0.0", Status: StatusReady, Capabilities: []string{"items.read"}},
+		AdapterInfo:   Info{ID: "test", Name: "Test Adapter", Version: "1.0.0", Status: StatusReady, Capabilities: []string{"items.read"}},
 		AdapterHealth: Health{Status: StatusReady},
 	}
 	if err := registry.Register(adapter); err != nil {
