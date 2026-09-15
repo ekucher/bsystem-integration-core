@@ -293,6 +293,139 @@ paths:
         '502': {$ref: '#/components/responses/UpstreamUnavailable'}
         '503': {$ref: '#/components/responses/DependencyUnavailable'}
 
+  /api/v1/clients/{id}:
+    get:
+      tags: [Business]
+      operationId: getClient
+      summary: Read one normalized client
+      description: |
+        Requires `crm.client.read`, evaluated against this specific resource.
+
+        An unknown Global ID, a Global ID belonging to a different entity type,
+        and a resource a scope-confined caller has not been granted are all
+        answered with the same `404`, so the endpoint cannot be used to
+        discover which identifiers exist or who owns them.
+      parameters:
+        - $ref: '#/components/parameters/GlobalID'
+      responses:
+        '200':
+          description: The resource.
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Client'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '502': {$ref: '#/components/responses/UpstreamUnavailable'}
+        '503': {$ref: '#/components/responses/DependencyUnavailable'}
+
+  /api/v1/contacts/{id}:
+    get:
+      tags: [Business]
+      operationId: getContact
+      summary: Read one normalized contact
+      description: |
+        Requires `crm.client.read`, evaluated against this specific resource.
+
+        An unknown Global ID, a Global ID belonging to a different entity type,
+        and a resource a scope-confined caller has not been granted are all
+        answered with the same `404`, so the endpoint cannot be used to
+        discover which identifiers exist or who owns them.
+
+        `client_id` is reported only when the owning client is already
+        mapped; reading a contact never allocates a Global ID.
+      parameters:
+        - $ref: '#/components/parameters/GlobalID'
+      responses:
+        '200':
+          description: The resource.
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Contact'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '502': {$ref: '#/components/responses/UpstreamUnavailable'}
+        '503': {$ref: '#/components/responses/DependencyUnavailable'}
+
+  /api/v1/projects/{id}:
+    get:
+      tags: [Business]
+      operationId: getProject
+      summary: Read one normalized project
+      description: |
+        Requires `projects.task.read`, evaluated against this specific resource.
+
+        An unknown Global ID, a Global ID belonging to a different entity type,
+        and a resource a scope-confined caller has not been granted are all
+        answered with the same `404`, so the endpoint cannot be used to
+        discover which identifiers exist or who owns them.
+      parameters:
+        - $ref: '#/components/parameters/GlobalID'
+      responses:
+        '200':
+          description: The resource.
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Project'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '502': {$ref: '#/components/responses/UpstreamUnavailable'}
+        '503': {$ref: '#/components/responses/DependencyUnavailable'}
+
+  /api/v1/issues/{id}:
+    get:
+      tags: [Business]
+      operationId: getIssue
+      summary: Read one normalized issue
+      description: |
+        Requires `projects.task.read`, evaluated against this specific resource.
+
+        An unknown Global ID, a Global ID belonging to a different entity type,
+        and a resource a scope-confined caller has not been granted are all
+        answered with the same `404`, so the endpoint cannot be used to
+        discover which identifiers exist or who owns them.
+      parameters:
+        - $ref: '#/components/parameters/GlobalID'
+      responses:
+        '200':
+          description: The resource.
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Issue'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '502': {$ref: '#/components/responses/UpstreamUnavailable'}
+        '503': {$ref: '#/components/responses/DependencyUnavailable'}
+
+  /api/v1/documents/{id}:
+    get:
+      tags: [Business]
+      operationId: getDocument
+      summary: Read one normalized document
+      description: |
+        Requires `wiki.document.read`, evaluated against this specific resource.
+
+        An unknown Global ID, a Global ID belonging to a different entity type,
+        and a resource a scope-confined caller has not been granted are all
+        answered with the same `404`, so the endpoint cannot be used to
+        discover which identifiers exist or who owns them.
+      parameters:
+        - $ref: '#/components/parameters/GlobalID'
+      responses:
+        '200':
+          description: The resource.
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Document'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '502': {$ref: '#/components/responses/UpstreamUnavailable'}
+        '503': {$ref: '#/components/responses/DependencyUnavailable'}
+
   /api/v1/global-ids:
     post:
       tags: [Global IDs]
@@ -585,6 +718,13 @@ components:
         be a member of `BSYSTEM-Services`.
 
   parameters:
+    GlobalID:
+      name: id
+      in: path
+      required: true
+      description: The resource's immutable platform Global ID.
+      schema: {type: string, pattern: '^[A-Z]+-[0-9]+$'}
+      example: CL-000001
     Limit:
       name: limit
       in: query
@@ -633,10 +773,11 @@ components:
     NotFound:
       description: |
         The resource does not exist, or the caller may not learn that it does.
+        The two are deliberately indistinguishable.
       content:
         application/json:
           schema: {$ref: '#/components/schemas/Error'}
-          example: {error: Global ID not found}
+          example: {error: resource not found, code: not_found}
     UpstreamUnavailable:
       description: |
         The upstream system failed, rate-limited the platform or timed out.
@@ -667,7 +808,7 @@ components:
         code:
           type: string
           description: Stable machine-readable code.
-          enum: [upstream_unavailable, scope_required, permission_required]
+          enum: [upstream_unavailable, scope_required, permission_required, not_found]
         source:
           type: string
           description: The adapter id of the failing upstream, when applicable.

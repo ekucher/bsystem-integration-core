@@ -105,6 +105,38 @@ func (c *Client) ListIssues(ctx context.Context, projectID string, limit int) ([
 	return out.Issues, nil
 }
 
+// GetProject reads one project by numeric id or identifier. It returns
+// adapters.ErrNotFound when the upstream has no such record.
+func (c *Client) GetProject(ctx context.Context, id string) (Project, error) {
+	id = strings.TrimSpace(id)
+	if id == "" {
+		return Project{}, adapters.ErrNotFound
+	}
+	var out struct {
+		Project Project `json:"project"`
+	}
+	if err := c.getJSON(ctx, "/projects/"+url.PathEscape(id)+".json", nil, &out); err != nil {
+		return Project{}, err
+	}
+	return out.Project, nil
+}
+
+// GetIssue reads one issue. It returns adapters.ErrNotFound when the upstream
+// has no such record.
+func (c *Client) GetIssue(ctx context.Context, id string) (Issue, error) {
+	id = strings.TrimSpace(id)
+	if id == "" {
+		return Issue{}, adapters.ErrNotFound
+	}
+	var out struct {
+		Issue Issue `json:"issue"`
+	}
+	if err := c.getJSON(ctx, "/issues/"+url.PathEscape(id)+".json", nil, &out); err != nil {
+		return Issue{}, err
+	}
+	return out.Issue, nil
+}
+
 func (c *Client) getJSON(ctx context.Context, path string, query url.Values, out any) error {
 	u := *c.baseURL
 	u.Path = strings.TrimRight(c.baseURL.Path, "/") + path
@@ -124,6 +156,9 @@ func (c *Client) getJSON(ctx context.Context, path string, query url.Values, out
 		return fmt.Errorf("Redmine request failed: %w", err)
 	}
 	defer resp.Body.Close()
+	if resp.StatusCode == http.StatusNotFound {
+		return adapters.ErrNotFound
+	}
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		return fmt.Errorf("Redmine returned HTTP %d", resp.StatusCode)
 	}

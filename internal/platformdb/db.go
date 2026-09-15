@@ -138,6 +138,23 @@ func (db *DB) ListModules(ctx context.Context) ([]Module, error) {
 	return result, rows.Err()
 }
 
+// LookupGlobalEntity returns an existing mapping without allocating one.
+//
+// Read paths use it so that reporting a relationship cannot mint a Global ID
+// as a side effect: an unmapped reference stays unmapped until something
+// deliberately maps it.
+func (db *DB) LookupGlobalEntity(ctx context.Context, entityType, source, sourceID string) (GlobalEntity, error) {
+	var entity GlobalEntity
+	var metadata []byte
+	err := db.pool.QueryRow(ctx, `SELECT global_id,entity_type,source,source_id,COALESCE(tenant_id,''),metadata,created_at FROM global_entities WHERE source=$1 AND entity_type=$2 AND source_id=$3`, source, entityType, sourceID).
+		Scan(&entity.GlobalID, &entity.EntityType, &entity.Source, &entity.SourceID, &entity.TenantID, &metadata, &entity.CreatedAt)
+	if err != nil {
+		return GlobalEntity{}, err
+	}
+	_ = json.Unmarshal(metadata, &entity.Metadata)
+	return entity, nil
+}
+
 func (db *DB) CreateGlobalEntity(ctx context.Context, entityType, source, sourceID, tenantID string, metadata map[string]any) (GlobalEntity, error) {
 	tx, err := db.pool.BeginTx(ctx, pgx.TxOptions{})
 	if err != nil {

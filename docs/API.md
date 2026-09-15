@@ -29,10 +29,15 @@ the machine API, and a service token cannot reach the human API.
 | `GET /api/v1/me` | any authenticated user |
 | `GET /api/v1/modules` | any authenticated user |
 | `GET /api/v1/clients` | `crm.client.read` |
+| `GET /api/v1/clients/{id}` | `crm.client.read`, for that client |
 | `GET /api/v1/contacts` | `crm.client.read` |
+| `GET /api/v1/contacts/{id}` | `crm.client.read`, for that contact |
 | `GET /api/v1/projects` | `projects.task.read` |
+| `GET /api/v1/projects/{id}` | `projects.task.read`, for that project |
 | `GET /api/v1/issues` | `projects.task.read` |
-| `GET /api/v1/documents` | `wiki.document.read`, and not the Customer role |
+| `GET /api/v1/issues/{id}` | `projects.task.read`, for that issue |
+| `GET /api/v1/documents` | `wiki.document.read` |
+| `GET /api/v1/documents/{id}` | `wiki.document.read`, for that document |
 | `POST /api/v1/global-ids` | administrator |
 | `GET /api/v1/global-ids/{id}` | administrator |
 | `GET /api/v1/audit` | administrator |
@@ -93,6 +98,13 @@ Every failure uses one shape:
 `error` is always present. `code` is the stable machine-readable form where one
 is defined; `source` names the failing adapter.
 
+| Code | Meaning |
+| --- | --- |
+| `permission_required` | the caller does not hold the permission |
+| `scope_required` | the caller holds it, but no grant covers this resource |
+| `not_found` | no such resource, or the caller may not learn there is one |
+| `upstream_unavailable` | the source system failed, rate-limited or timed out |
+
 An upstream failure — an error status, a rate limit or a timeout — normalizes to
 `502` with `upstream_unavailable`. Upstream status codes, hostnames, credentials
 and payloads are never forwarded, and no error body carries a credential, an
@@ -115,6 +127,14 @@ source system stays authoritative and traceable:
 
 A reference that cannot be resolved is omitted rather than guessed: a contact
 whose upstream account has no mapping is returned without a `client_id`.
+
+Detail endpoints take the platform Global ID, resolve it to its upstream
+mapping and read that one record. An unknown Global ID, a Global ID belonging
+to a different entity type, and a resource a scope-confined caller has not been
+granted are all answered with the same `404`, so the endpoints cannot be used
+to discover which identifiers exist or who owns them. Reading a detail record
+never allocates a Global ID, so a read cannot mint identifiers as a side
+effect.
 
 ## Global IDs
 

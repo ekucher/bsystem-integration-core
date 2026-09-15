@@ -100,6 +100,34 @@ func (c *Client) ListContacts(ctx context.Context, maxSize int) ([]Contact, erro
 	return out.List, nil
 }
 
+// GetAccount reads one account. It returns adapters.ErrNotFound when the
+// upstream has no such record.
+func (c *Client) GetAccount(ctx context.Context, id string) (Account, error) {
+	id = strings.TrimSpace(id)
+	if id == "" {
+		return Account{}, adapters.ErrNotFound
+	}
+	var account Account
+	if err := c.getJSON(ctx, "/api/v1/Account/"+url.PathEscape(id), nil, &account); err != nil {
+		return Account{}, err
+	}
+	return account, nil
+}
+
+// GetContact reads one contact. It returns adapters.ErrNotFound when the
+// upstream has no such record.
+func (c *Client) GetContact(ctx context.Context, id string) (Contact, error) {
+	id = strings.TrimSpace(id)
+	if id == "" {
+		return Contact{}, adapters.ErrNotFound
+	}
+	var contact Contact
+	if err := c.getJSON(ctx, "/api/v1/Contact/"+url.PathEscape(id), nil, &contact); err != nil {
+		return Contact{}, err
+	}
+	return contact, nil
+}
+
 func (c *Client) getJSON(ctx context.Context, path string, query url.Values, out any) error {
 	req, err := c.request(ctx, http.MethodGet, path, query)
 	if err != nil {
@@ -110,6 +138,9 @@ func (c *Client) getJSON(ctx context.Context, path string, query url.Values, out
 		return fmt.Errorf("EspoCRM request failed: %w", err)
 	}
 	defer resp.Body.Close()
+	if resp.StatusCode == http.StatusNotFound {
+		return adapters.ErrNotFound
+	}
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		return fmt.Errorf("EspoCRM returned HTTP %d", resp.StatusCode)
 	}

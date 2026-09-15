@@ -3,6 +3,8 @@ package main
 import (
 	"net/http"
 	"sort"
+
+	"github.com/ekucher/bsystem-integration-core/internal/authz"
 )
 
 // authKind is the authentication boundary a route sits behind.
@@ -26,7 +28,12 @@ type route struct {
 	// Permission is required to reach the handler. An empty permission means
 	// authentication alone is enough; "*" means administrator.
 	Permission string
-	Handler    func(*app) http.HandlerFunc
+	// ResourceScope, when set, means the route addresses a single resource.
+	// The permission is then evaluated in the handler against the resolved
+	// resource rather than across the platform, so a scope-confined role can
+	// reach exactly what it has been granted and nothing else.
+	ResourceScope string
+	Handler       func(*app) http.HandlerFunc
 }
 
 // Pattern renders the route as a net/http routing pattern.
@@ -49,10 +56,15 @@ func routes() []route {
 		{Method: http.MethodGet, Path: "/api/v1/me", Auth: authHuman, Handler: func(a *app) http.HandlerFunc { return a.me }},
 		{Method: http.MethodGet, Path: "/api/v1/modules", Auth: authHuman, Handler: func(a *app) http.HandlerFunc { return a.modules }},
 		{Method: http.MethodGet, Path: "/api/v1/clients", Auth: authHuman, Permission: "crm.client.read", Handler: func(a *app) http.HandlerFunc { return a.listClients }},
+		{Method: http.MethodGet, Path: "/api/v1/clients/{id}", Auth: authHuman, Permission: "crm.client.read", ResourceScope: authz.ScopeClient, Handler: func(a *app) http.HandlerFunc { return a.getClient }},
 		{Method: http.MethodGet, Path: "/api/v1/contacts", Auth: authHuman, Permission: "crm.client.read", Handler: func(a *app) http.HandlerFunc { return a.listContacts }},
+		{Method: http.MethodGet, Path: "/api/v1/contacts/{id}", Auth: authHuman, Permission: "crm.client.read", ResourceScope: authz.ScopeResource, Handler: func(a *app) http.HandlerFunc { return a.getContact }},
 		{Method: http.MethodGet, Path: "/api/v1/projects", Auth: authHuman, Permission: "projects.task.read", Handler: func(a *app) http.HandlerFunc { return a.listProjects }},
+		{Method: http.MethodGet, Path: "/api/v1/projects/{id}", Auth: authHuman, Permission: "projects.task.read", ResourceScope: authz.ScopeProject, Handler: func(a *app) http.HandlerFunc { return a.getProject }},
 		{Method: http.MethodGet, Path: "/api/v1/issues", Auth: authHuman, Permission: "projects.task.read", Handler: func(a *app) http.HandlerFunc { return a.listIssues }},
+		{Method: http.MethodGet, Path: "/api/v1/issues/{id}", Auth: authHuman, Permission: "projects.task.read", ResourceScope: authz.ScopeResource, Handler: func(a *app) http.HandlerFunc { return a.getIssue }},
 		{Method: http.MethodGet, Path: "/api/v1/documents", Auth: authHuman, Permission: "wiki.document.read", Handler: func(a *app) http.HandlerFunc { return a.listDocuments }},
+		{Method: http.MethodGet, Path: "/api/v1/documents/{id}", Auth: authHuman, Permission: "wiki.document.read", ResourceScope: authz.ScopeResource, Handler: func(a *app) http.HandlerFunc { return a.getDocument }},
 		{Method: http.MethodPost, Path: "/api/v1/global-ids", Auth: authHuman, Permission: "*", Handler: func(a *app) http.HandlerFunc { return a.createGlobalID }},
 		{Method: http.MethodGet, Path: "/api/v1/global-ids/{id}", Auth: authHuman, Permission: "*", Handler: func(a *app) http.HandlerFunc { return a.resolveGlobalID }},
 		{Method: http.MethodGet, Path: "/api/v1/audit", Auth: authHuman, Permission: "*", Handler: func(a *app) http.HandlerFunc { return a.auditEvents }},
@@ -79,8 +91,10 @@ func (a *app) handler() http.Handler {
 	for _, r := range routes() {
 		handler := http.Handler(r.Handler(a))
 		// Authorization wraps the handler first so that it runs after
-		// authentication has resolved the principal.
-		if r.Auth != authNone {
+		// authentication has resolved the principal. A route that addresses a
+		// single resource evaluates in the handler instead, once it knows
+		// which resource was addressed.
+		if r.Auth != authNone && r.ResourceScope == "" {
 			handler = a.authorize(r.Permission, handler)
 		}
 		switch r.Auth {

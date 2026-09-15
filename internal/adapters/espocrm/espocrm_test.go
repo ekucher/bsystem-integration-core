@@ -2,10 +2,13 @@ package espocrm
 
 import (
 	"context"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"testing"
 	"time"
+
+	"github.com/ekucher/bsystem-integration-core/internal/adapters"
 )
 
 func TestListAccountsAndHealth(t *testing.T) {
@@ -54,5 +57,95 @@ func TestHTTPFailure(t *testing.T) {
 	}
 	if _, err := client.ListContacts(context.Background(), 10); err == nil {
 		t.Fatal("expected HTTP error")
+	}
+}
+
+func newDetailClient(t *testing.T) *Client {
+	t.Helper()
+	mux := http.NewServeMux()
+	mux.HandleFunc("/api/v1/Account/{id}", func(w http.ResponseWriter, r *http.Request) {
+		if r.PathValue("id") != "acc-northwind" {
+			http.Error(w, `{"error":"not found"}`, http.StatusNotFound)
+			return
+		}
+		_, _ = w.Write([]byte(`{"id":"acc-northwind","name":"Northwind Trading","website":"https://northwind.example.invalid"}`))
+	})
+	mux.HandleFunc("/api/v1/Contact/{id}", func(w http.ResponseWriter, r *http.Request) {
+		if r.PathValue("id") != "ct-anna" {
+			http.Error(w, `{"error":"not found"}`, http.StatusNotFound)
+			return
+		}
+		_, _ = w.Write([]byte(`{"id":"ct-anna","name":"Anna Kovalenko","accountId":"acc-northwind"}`))
+	})
+	server := httptest.NewServer(mux)
+	t.Cleanup(server.Close)
+	client, err := New(server.URL, "secret", time.Second)
+	if err != nil {
+		t.Fatalf("build client: %v", err)
+	}
+	return client
+}
+
+func TestGetAccountAndContact(t *testing.T) {
+	client := newDetailClient(t)
+
+	account, err := client.GetAccount(context.Background(), "acc-northwind")
+	if err != nil {
+		t.Fatalf("get account: %v", err)
+	}
+	if account.Name != "Northwind Trading" || account.Website == "" {
+		t.Fatalf("unexpected account: %#v", account)
+	}
+
+	contact, err := client.GetContact(context.Background(), "ct-anna")
+	if err != nil {
+		t.Fatalf("get contact: %v", err)
+	}
+	if contact.Name != "Anna Kovalenko" || contact.AccountID != "acc-northwind" {
+		t.Fatalf("unexpected contact: %#v", contact)
+	}
+}
+
+// A missing upstream record must be distinguishable from an upstream failure,
+// so the platform can answer 404 instead of reporting the source as down.
+func TestDetailReadsReportMissingRecordsAsNotFound(t *testing.T) {
+	client := newDetailClient(t)
+	tests := []struct {
+		name string
+		read func() error
+	}{
+		{name: "unknown account", read: func() error { _, err := client.GetAccount(context.Background(), "acc-missing"); return err }},
+		{name: "unknown contact", read: func() error { _, err := client.GetContact(context.Background(), "ct-missing"); return err }},
+		{name: "empty account id", read: func() error { _, err := client.GetAccount(context.Background(), " "); return err }},
+		{name: "empty contact id", read: func() error { _, err := client.GetContact(context.Background(), ""); return err }},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			if err := test.read(); !errors.Is(err, adapters.ErrNotFound) {
+				t.Fatalf("error = %v, want adapters.ErrNotFound", err)
+			}
+		})
+	}
+}
+
+// An upstream that is genuinely broken must not be mistaken for a missing
+// record, or a real outage would surface as an empty result.
+func TestUpstreamFailureIsNotReportedAsNotFound(t *testing.T) {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/api/v1/Account/{id}", func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusInternalServerError)
+	})
+	server := httptest.NewServer(mux)
+	t.Cleanup(server.Close)
+	client, err := New(server.URL, "secret", time.Second)
+	if err != nil {
+		t.Fatalf("build client: %v", err)
+	}
+	_, err = client.GetAccount(context.Background(), "acc-northwind")
+	if err == nil {
+		t.Fatal("an upstream 500 must surface as an error")
+	}
+	if errors.Is(err, adapters.ErrNotFound) {
+		t.Fatalf("an upstream 500 must not be reported as a missing record: %v", err)
 	}
 }

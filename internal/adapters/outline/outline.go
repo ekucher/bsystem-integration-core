@@ -87,7 +87,7 @@ func (c *Client) ListDocuments(ctx context.Context, limit int) ([]Document, erro
 func (c *Client) GetDocument(ctx context.Context, id string) (Document, error) {
 	id = strings.TrimSpace(id)
 	if id == "" {
-		return Document{}, errors.New("document id is required")
+		return Document{}, adapters.ErrNotFound
 	}
 	var out rpcResponse[Document]
 	if err := c.rpc(ctx, "documents.info", map[string]any{"id": id}, &out); err != nil {
@@ -115,6 +115,9 @@ func (c *Client) rpc(ctx context.Context, method string, payload any, out any) e
 		return fmt.Errorf("Outline request failed: %w", err)
 	}
 	defer resp.Body.Close()
+	if resp.StatusCode == http.StatusNotFound {
+		return adapters.ErrNotFound
+	}
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		return fmt.Errorf("Outline returned HTTP %d", resp.StatusCode)
 	}

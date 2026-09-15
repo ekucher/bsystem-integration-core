@@ -1,6 +1,9 @@
 package main
 
-import "testing"
+import (
+	"strings"
+	"testing"
+)
 
 func TestUnique(t *testing.T) {
 	values := unique([]string{"a", "b", "a", "", "b"})
@@ -39,6 +42,39 @@ func TestDataRoutesRequireAPermission(t *testing.T) {
 		}
 		if route.Permission == "" {
 			t.Errorf("%s returns data without requiring a permission", route.Pattern())
+		}
+	}
+}
+
+// A route that addresses one resource must evaluate its permission against
+// that resource. Declaring a resource scope is what tells the router to leave
+// the decision to the handler, so the two must always be declared together.
+func TestResourceRoutesDeclareBothAPermissionAndAScope(t *testing.T) {
+	for _, route := range routes() {
+		t.Run(route.Pattern(), func(t *testing.T) {
+			addressesOne := strings.Contains(route.Path, "{id}")
+			switch {
+			case route.ResourceScope != "" && route.Permission == "":
+				t.Fatal("a resource-scoped route without a permission would authorize nothing")
+			case route.ResourceScope != "" && !addressesOne:
+				t.Fatal("a collection route must not declare a resource scope; its permission would never be evaluated")
+			}
+		})
+	}
+}
+
+// The normalized business detail endpoints all take a Global ID and all
+// resolve it before touching an upstream. Missing one would leave an entity
+// readable only through its collection.
+func TestEveryNormalizedEntityHasADetailEndpoint(t *testing.T) {
+	served := map[string]bool{}
+	for _, route := range routes() {
+		served[route.Pattern()] = true
+	}
+	for _, path := range []string{"clients", "contacts", "projects", "issues", "documents"} {
+		pattern := "GET /api/v1/" + path + "/{id}"
+		if !served[pattern] {
+			t.Errorf("%s is missing", pattern)
 		}
 	}
 }

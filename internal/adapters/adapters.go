@@ -9,6 +9,11 @@ import (
 
 var ErrNotSupported = errors.New("adapter capability is not supported")
 
+// ErrNotFound means the upstream system has no such record. Adapters return
+// it instead of a generic failure so that a detail endpoint can answer 404
+// rather than reporting the upstream as unavailable.
+var ErrNotFound = errors.New("upstream resource not found")
+
 type Status string
 
 const (
