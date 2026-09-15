@@ -38,34 +38,19 @@ func init() {
 	if rawURL := strings.TrimSpace(os.Getenv("ESPOCRM_URL")); rawURL != "" {
 		client, err := espocrm.New(rawURL, os.Getenv("ESPOCRM_API_KEY"), 10*time.Second)
 		if err != nil { log.Printf("EspoCRM adapter disabled: %v", err) } else { _ = adapterRegistry.Register(client) }
-	} else {
-		_ = adapterRegistry.Register(adapters.Mock{AdapterInfo: adapters.Info{ID: "espocrm", Name: "EspoCRM", Version: "0", Status: adapters.StatusDisabled, Capabilities: []string{"clients.read", "contacts.read"}}, AdapterHealth: adapters.Health{Status: adapters.StatusDisabled, Message: "not configured"}})
-	}
-
+	} else { _ = adapterRegistry.Register(adapters.Mock{AdapterInfo: adapters.Info{ID: "espocrm", Name: "EspoCRM", Version: "0", Status: adapters.StatusDisabled, Capabilities: []string{"clients.read", "contacts.read"}}, AdapterHealth: adapters.Health{Status: adapters.StatusDisabled, Message: "not configured"}}) }
 	if rawURL := strings.TrimSpace(os.Getenv("REDMINE_URL")); rawURL != "" {
 		client, err := redmine.New(rawURL, os.Getenv("REDMINE_API_KEY"), 10*time.Second)
 		if err != nil { log.Printf("Redmine adapter disabled: %v", err) } else { _ = adapterRegistry.Register(client) }
-	} else {
-		_ = adapterRegistry.Register(adapters.Mock{AdapterInfo: adapters.Info{ID: "redmine", Name: "Redmine", Version: "0", Status: adapters.StatusDisabled, Capabilities: []string{"projects.read", "issues.read"}}, AdapterHealth: adapters.Health{Status: adapters.StatusDisabled, Message: "not configured"}})
-	}
-
+	} else { _ = adapterRegistry.Register(adapters.Mock{AdapterInfo: adapters.Info{ID: "redmine", Name: "Redmine", Version: "0", Status: adapters.StatusDisabled, Capabilities: []string{"projects.read", "issues.read"}}, AdapterHealth: adapters.Health{Status: adapters.StatusDisabled, Message: "not configured"}}) }
 	if rawURL := strings.TrimSpace(os.Getenv("OUTLINE_URL")); rawURL != "" {
 		client, err := outline.New(rawURL, os.Getenv("OUTLINE_API_KEY"), 10*time.Second)
 		if err != nil { log.Printf("Outline adapter disabled: %v", err) } else { _ = adapterRegistry.Register(client) }
-	} else {
-		_ = adapterRegistry.Register(adapters.Mock{AdapterInfo: adapters.Info{ID: "outline", Name: "Outline", Version: "0", Status: adapters.StatusDisabled, Capabilities: []string{"documents.read"}}, AdapterHealth: adapters.Health{Status: adapters.StatusDisabled, Message: "not configured"}})
-	}
+	} else { _ = adapterRegistry.Register(adapters.Mock{AdapterInfo: adapters.Info{ID: "outline", Name: "Outline", Version: "0", Status: adapters.StatusDisabled, Capabilities: []string{"documents.read"}}, AdapterHealth: adapters.Health{Status: adapters.StatusDisabled, Message: "not configured"}}) }
 }
 
-func hasString(values []string, expected string) bool {
-	for _, value := range values { if value == expected { return true } }
-	return false
-}
-
-func serviceHasPermission(principal servicePrincipal, permission string) bool {
-	for _, value := range principal.Permissions { if value == permission || value == "*" { return true } }
-	return false
-}
+func hasString(values []string, expected string) bool { for _, value := range values { if value == expected { return true } }; return false }
+func serviceHasPermission(principal servicePrincipal, permission string) bool { for _, value := range principal.Permissions { if value == permission || value == "*" { return true } }; return false }
 
 func (a *app) authenticateService(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -74,10 +59,8 @@ func (a *app) authenticateService(next http.Handler) http.Handler {
 		info, err := fetchUserInfo(r.Context(), strings.TrimPrefix(header, "Bearer "))
 		if err != nil { log.Printf("service authentication failed: %v", err); writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "invalid or expired token"}); return }
 		if !hasString(info.Groups, serviceGroup) { writeJSON(w, http.StatusForbidden, map[string]string{"error": "service identity group required"}); return }
-		username := info.PreferredUsername
-		if username == "" { username = info.Email }
-		name := info.Name
-		if name == "" { name = username }
+		username := info.PreferredUsername; if username == "" { username = info.Email }
+		name := info.Name; if name == "" { name = username }
 		groups := unique(info.Groups)
 		globalID, created, err := a.db.EnsureServiceIdentity(r.Context(), platformdb.ServiceIdentity{Subject: info.Sub, Name: name, Username: username, Groups: groups})
 		if err != nil { log.Printf("service identity persistence failed: %v", err); writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "service identity persistence unavailable"}); return }
@@ -85,25 +68,14 @@ func (a *app) authenticateService(next http.Handler) http.Handler {
 		profile, err := a.db.ResolveAccess(r.Context(), groups, "service")
 		if err != nil { log.Printf("service RBAC resolution failed: %v", err); writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "RBAC store unavailable"}); return }
 		principal := servicePrincipal{ID: globalID, Subject: info.Sub, Name: name, Username: username, Groups: groups, Roles: profile.Roles, Permissions: profile.Permissions}
-		ctx := context.WithValue(r.Context(), serviceContextKey, principal)
-		next.ServeHTTP(w, r.WithContext(ctx))
+		next.ServeHTTP(w, r.WithContext(context.WithValue(r.Context(), serviceContextKey, principal)))
 	})
 }
 
 func serviceFrom(ctx context.Context) servicePrincipal { principal, _ := ctx.Value(serviceContextKey).(servicePrincipal); return principal }
 func (a *app) serviceWhoAmI(w http.ResponseWriter, r *http.Request) { writeJSON(w, http.StatusOK, serviceFrom(r.Context())) }
-
-func (a *app) serviceAdapters(w http.ResponseWriter, r *http.Request) {
-	principal := serviceFrom(r.Context())
-	if !serviceHasPermission(principal, "adapters.read") { writeJSON(w, http.StatusForbidden, map[string]string{"error": "adapters.read permission required"}); return }
-	writeJSON(w, http.StatusOK, adapterRegistry.List())
-}
-
-func (a *app) serviceAdapterHealth(w http.ResponseWriter, r *http.Request) {
-	principal := serviceFrom(r.Context())
-	if !serviceHasPermission(principal, "adapters.read") { writeJSON(w, http.StatusForbidden, map[string]string{"error": "adapters.read permission required"}); return }
-	writeJSON(w, http.StatusOK, adapterRegistry.Health(r.Context()))
-}
+func (a *app) serviceAdapters(w http.ResponseWriter, r *http.Request) { principal := serviceFrom(r.Context()); if !serviceHasPermission(principal, "adapters.read") { writeJSON(w, http.StatusForbidden, map[string]string{"error": "adapters.read permission required"}); return }; writeJSON(w, http.StatusOK, adapterRegistry.List()) }
+func (a *app) serviceAdapterHealth(w http.ResponseWriter, r *http.Request) { principal := serviceFrom(r.Context()); if !serviceHasPermission(principal, "adapters.read") { writeJSON(w, http.StatusForbidden, map[string]string{"error": "adapters.read permission required"}); return }; writeJSON(w, http.StatusOK, adapterRegistry.Health(r.Context())) }
 
 func (a *app) servicePublishEvent(w http.ResponseWriter, r *http.Request) {
 	principal := serviceFrom(r.Context())
@@ -114,8 +86,7 @@ func (a *app) servicePublishEvent(w http.ResponseWriter, r *http.Request) {
 	if envelope.RequestID == "" { envelope.RequestID = requestIDFrom(r.Context()) }
 	if err := envelope.Normalize(time.Now()); err != nil { writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()}); return }
 	if a.nc == nil || !a.nc.IsConnected() { writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "event bus unavailable"}); return }
-	a.publish(events.Subject(envelope.Event), envelope)
-	writeJSON(w, http.StatusAccepted, envelope)
+	a.publish(events.Subject(envelope.Event), envelope); writeJSON(w, http.StatusAccepted, envelope)
 }
 
 func registerServiceRoutes(root *http.ServeMux, a *app) {
@@ -125,12 +96,8 @@ func registerServiceRoutes(root *http.ServeMux, a *app) {
 	serviceMux.HandleFunc("GET /api/service/v1/adapters/health", a.serviceAdapterHealth)
 	serviceMux.HandleFunc("POST /api/service/v1/events", a.servicePublishEvent)
 	root.Handle("/api/service/", a.authenticateService(serviceMux))
-
-	businessMux := http.NewServeMux()
-	registerBusinessRoutes(businessMux, a)
-	for _, path := range []string{"/api/v1/clients", "/api/v1/contacts", "/api/v1/projects", "/api/v1/issues", "/api/v1/documents"} {
-		root.Handle(path, a.authenticate(businessMux))
-	}
-
+	businessMux := http.NewServeMux(); registerBusinessRoutes(businessMux, a)
+	for _, path := range []string{"/api/v1/clients", "/api/v1/contacts", "/api/v1/projects", "/api/v1/issues", "/api/v1/documents"} { root.Handle(path, a.authenticate(businessMux)) }
 	registerAdminRBACRootRoutes(root, a)
+	registerOperationsRoutes(root, a)
 }
