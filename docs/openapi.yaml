@@ -1,0 +1,151 @@
+openapi: 3.1.0
+info:
+  title: BSYSTEM Integration Core API
+  version: 0.7.0
+  description: Authorization-aware normalized API for the BSYSTEM Platform.
+servers:
+  - url: /api/v1
+security:
+  - bearerAuth: []
+paths:
+  /me:
+    get:
+      summary: Return the authenticated BSYSTEM user and effective access
+      responses:
+        '200': {description: User profile and authorization}
+        '401': {description: Missing or invalid access token}
+  /modules:
+    get:
+      summary: List modules visible to the authenticated user
+      responses:
+        '200': {description: Module list}
+  /clients:
+    get:
+      summary: List normalized EspoCRM clients
+      parameters:
+        - $ref: '#/components/parameters/Limit'
+      responses:
+        '200': {description: Clients with CL-* Global IDs}
+        '403': {description: Missing crm.client.read}
+        '502': {$ref: '#/components/responses/UpstreamUnavailable'}
+  /contacts:
+    get:
+      summary: List normalized EspoCRM contacts
+      parameters:
+        - $ref: '#/components/parameters/Limit'
+      responses:
+        '200': {description: Contacts with CT-* Global IDs}
+        '403': {description: Missing CRM read permission}
+        '502': {$ref: '#/components/responses/UpstreamUnavailable'}
+  /projects:
+    get:
+      summary: List normalized Redmine projects
+      parameters:
+        - $ref: '#/components/parameters/Limit'
+      responses:
+        '200': {description: Projects with PR-* Global IDs}
+        '403': {description: Missing projects.task.read}
+        '502': {$ref: '#/components/responses/UpstreamUnavailable'}
+  /issues:
+    get:
+      summary: List normalized Redmine issues
+      parameters:
+        - $ref: '#/components/parameters/Limit'
+        - name: project
+          in: query
+          schema: {type: string}
+      responses:
+        '200': {description: Issues with TSK-* Global IDs}
+        '403': {description: Missing projects.task.read}
+        '502': {$ref: '#/components/responses/UpstreamUnavailable'}
+  /documents:
+    get:
+      summary: List normalized internal Outline documents
+      description: Customer role is denied until tenant-aware document scopes are implemented.
+      parameters:
+        - $ref: '#/components/parameters/Limit'
+      responses:
+        '200': {description: Documents with DOC-* Global IDs}
+        '403': {description: Missing permission or tenant scope required}
+        '502': {$ref: '#/components/responses/UpstreamUnavailable'}
+  /global-ids:
+    post:
+      summary: Allocate or resolve an idempotent Global ID mapping
+      responses:
+        '201': {description: Global entity mapping}
+        '403': {description: Administrator required}
+  /global-ids/{id}:
+    get:
+      summary: Resolve a Global ID
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: {type: string}
+      responses:
+        '200': {description: Mapping}
+        '404': {description: Global ID not found}
+  /audit:
+    get:
+      summary: List audit events
+      parameters:
+        - name: limit
+          in: query
+          schema: {type: integer, minimum: 1, maximum: 500, default: 100}
+      responses:
+        '200': {description: Audit events}
+        '403': {description: Administrator required}
+  /admin/rbac/roles:
+    get:
+      summary: List persistent RBAC roles
+      responses:
+        '200': {description: Roles}
+        '403': {description: Administrator required}
+  /admin/rbac/scopes:
+    get:
+      summary: List scope grants for a principal
+      parameters:
+        - name: principal_type
+          in: query
+          required: true
+          schema: {type: string, enum: [user, service]}
+        - name: principal_id
+          in: query
+          required: true
+          schema: {type: string}
+      responses:
+        '200': {description: Scope grants}
+    post:
+      summary: Grant a scoped permission
+      responses:
+        '201': {description: Scope grant created}
+    delete:
+      summary: Revoke a scoped permission
+      responses:
+        '200': {description: Scope grant revoked}
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: OAuth2 access token
+  parameters:
+    Limit:
+      name: limit
+      in: query
+      schema: {type: integer, minimum: 1, maximum: 200, default: 50}
+  responses:
+    UpstreamUnavailable:
+      description: Upstream adapter failed
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/UpstreamError'
+  schemas:
+    UpstreamError:
+      type: object
+      required: [error, code, source]
+      properties:
+        error: {type: string, const: upstream service unavailable}
+        code: {type: string, const: upstream_unavailable}
+        source: {type: string}
