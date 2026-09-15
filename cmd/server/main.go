@@ -55,9 +55,9 @@ type globalIDRequest struct {
 type contextKey string
 
 const (
-	userContextKey      contextKey = "user"
+	userContextKey       contextKey = "user"
 	globalUserContextKey contextKey = "global-user-id"
-	requestIDContextKey contextKey = "request-id"
+	requestIDContextKey  contextKey = "request-id"
 )
 
 var groupRoles = map[string]string{
@@ -119,17 +119,27 @@ func fetchUserInfo(ctx context.Context, token string) (userInfo, error) {
 		return userInfo{}, errors.New("AUTHENTIK_USERINFO_URL is not configured")
 	}
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
-	if err != nil { return userInfo{}, err }
+	if err != nil {
+		return userInfo{}, err
+	}
 	req.Header.Set("Authorization", "Bearer "+token)
 	req.Header.Set("Accept", "application/json")
 	client := &http.Client{Timeout: 5 * time.Second}
 	resp, err := client.Do(req)
-	if err != nil { return userInfo{}, err }
+	if err != nil {
+		return userInfo{}, err
+	}
 	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusOK { return userInfo{}, errors.New("token rejected by authentik") }
+	if resp.StatusCode != http.StatusOK {
+		return userInfo{}, errors.New("token rejected by authentik")
+	}
 	var info userInfo
-	if err := json.NewDecoder(resp.Body).Decode(&info); err != nil { return userInfo{}, err }
-	if info.Sub == "" { return userInfo{}, errors.New("userinfo response has no subject") }
+	if err := json.NewDecoder(resp.Body).Decode(&info); err != nil {
+		return userInfo{}, err
+	}
+	if info.Sub == "" {
+		return userInfo{}, errors.New("userinfo response has no subject")
+	}
 	return info, nil
 }
 
@@ -147,7 +157,9 @@ func (a *app) authenticate(next http.Handler) http.Handler {
 			return
 		}
 		username := info.PreferredUsername
-		if username == "" { username = info.Email }
+		if username == "" {
+			username = info.Email
+		}
 		globalUserID, created, err := a.db.EnsureIdentity(r.Context(), platformdb.Identity{
 			Subject: info.Sub, Email: info.Email, DisplayName: info.Name, Username: username, Groups: unique(info.Groups),
 		})
@@ -156,7 +168,9 @@ func (a *app) authenticate(next http.Handler) http.Handler {
 			writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "identity persistence unavailable"})
 			return
 		}
-		if created { a.publish("identity.created", map[string]any{"global_user_id": globalUserID, "subject": info.Sub}) }
+		if created {
+			a.publish("identity.created", map[string]any{"global_user_id": globalUserID, "subject": info.Sub})
+		}
 		ctx := context.WithValue(r.Context(), userContextKey, info)
 		ctx = context.WithValue(ctx, globalUserContextKey, globalUserID)
 		next.ServeHTTP(w, r.WithContext(ctx))
@@ -167,7 +181,10 @@ func unique(values []string) []string {
 	seen := map[string]bool{}
 	result := make([]string, 0, len(values))
 	for _, value := range values {
-		if value != "" && !seen[value] { seen[value] = true; result = append(result, value) }
+		if value != "" && !seen[value] {
+			seen[value] = true
+			result = append(result, value)
+		}
 	}
 	return result
 }
@@ -176,18 +193,26 @@ func resolveAccess(info userInfo, globalUserID string) meResponse {
 	roles, permissions, modules := []string{}, []string{}, []string{}
 	for _, group := range info.Groups {
 		role, ok := groupRoles[group]
-		if !ok { continue }
+		if !ok {
+			continue
+		}
 		roles = append(roles, role)
 		permissions = append(permissions, rolePermissions[role]...)
 		modules = append(modules, roleModules[role]...)
 	}
 	username := info.PreferredUsername
-	if username == "" { username = info.Email }
+	if username == "" {
+		username = info.Email
+	}
 	return meResponse{ID: globalUserID, Subject: info.Sub, Email: info.Email, Name: info.Name, Username: username, Groups: unique(info.Groups), Roles: unique(roles), Permissions: unique(permissions), Modules: unique(modules)}
 }
 
 func hasPermission(access meResponse, permission string) bool {
-	for _, p := range access.Permissions { if p == "*" || p == permission { return true } }
+	for _, p := range access.Permissions {
+		if p == "*" || p == permission {
+			return true
+		}
+	}
 	return false
 }
 
@@ -197,22 +222,34 @@ func requestIDFrom(ctx context.Context) string {
 }
 
 func sourceIP(r *http.Request) string {
-	if forwarded := strings.TrimSpace(strings.Split(r.Header.Get("X-Forwarded-For"), ",")[0]); forwarded != "" { return forwarded }
+	if forwarded := strings.TrimSpace(strings.Split(r.Header.Get("X-Forwarded-For"), ",")[0]); forwarded != "" {
+		return forwarded
+	}
 	host, _, err := net.SplitHostPort(r.RemoteAddr)
-	if err == nil { return host }
+	if err == nil {
+		return host
+	}
 	return r.RemoteAddr
 }
 
 func (a *app) audit(r *http.Request, access meResponse, action, resourceType, resourceID string, metadata map[string]any) {
 	err := a.db.InsertAudit(r.Context(), platformdb.AuditEvent{Subject: access.Subject, GlobalUserID: access.ID, Action: action, ResourceType: resourceType, ResourceID: resourceID, RequestID: requestIDFrom(r.Context()), SourceIP: sourceIP(r), Metadata: metadata})
-	if err != nil { log.Printf("audit write failed: %v", err) }
+	if err != nil {
+		log.Printf("audit write failed: %v", err)
+	}
 }
 
 func (a *app) publish(subject string, payload any) {
-	if a.nc == nil { return }
+	if a.nc == nil {
+		return
+	}
 	body, err := json.Marshal(payload)
-	if err != nil { return }
-	if err := a.nc.Publish(subject, body); err != nil { log.Printf("NATS publish %s failed: %v", subject, err) }
+	if err != nil {
+		return
+	}
+	if err := a.nc.Publish(subject, body); err != nil {
+		log.Printf("NATS publish %s failed: %v", subject, err)
+	}
 }
 
 func (a *app) health(w http.ResponseWriter, r *http.Request) {
@@ -220,11 +257,19 @@ func (a *app) health(w http.ResponseWriter, r *http.Request) {
 	status := "ok"
 	ctx, cancel := context.WithTimeout(r.Context(), 2*time.Second)
 	defer cancel()
-	if err := a.db.Ping(ctx); err != nil { checks["database"] = "error"; status = "degraded" }
-	if a.nc == nil || !a.nc.IsConnected() { checks["nats"] = "degraded"; status = "degraded" }
+	if err := a.db.Ping(ctx); err != nil {
+		checks["database"] = "error"
+		status = "degraded"
+	}
+	if a.nc == nil || !a.nc.IsConnected() {
+		checks["nats"] = "degraded"
+		status = "degraded"
+	}
 	code := http.StatusOK
-	if checks["database"] == "error" { code = http.StatusServiceUnavailable }
-	writeJSON(w, code, healthResponse{Status: status, Service: "bsystem-integration-core", Version: "0.3.0", Timestamp: time.Now().UTC().Format(time.RFC3339), Checks: checks})
+	if checks["database"] == "error" {
+		code = http.StatusServiceUnavailable
+	}
+	writeJSON(w, code, healthResponse{Status: status, Service: "bsystem-integration-core", Version: "0.4.0", Timestamp: time.Now().UTC().Format(time.RFC3339), Checks: checks})
 }
 
 func (a *app) me(w http.ResponseWriter, r *http.Request) {
@@ -238,11 +283,20 @@ func (a *app) modules(w http.ResponseWriter, r *http.Request) {
 	globalUserID := r.Context().Value(globalUserContextKey).(string)
 	access := resolveAccess(info, globalUserID)
 	allowed := map[string]bool{}
-	for _, id := range access.Modules { allowed[id] = true }
+	for _, id := range access.Modules {
+		allowed[id] = true
+	}
 	all, err := a.db.ListModules(r.Context())
-	if err != nil { writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "module registry unavailable"}); return }
+	if err != nil {
+		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "module registry unavailable"})
+		return
+	}
 	result := []platformdb.Module{}
-	for _, item := range all { if allowed[item.ID] { result = append(result, item) } }
+	for _, item := range all {
+		if allowed[item.ID] {
+			result = append(result, item)
+		}
+	}
 	writeJSON(w, http.StatusOK, result)
 }
 
@@ -250,13 +304,27 @@ func (a *app) createGlobalID(w http.ResponseWriter, r *http.Request) {
 	info := r.Context().Value(userContextKey).(userInfo)
 	globalUserID := r.Context().Value(globalUserContextKey).(string)
 	access := resolveAccess(info, globalUserID)
-	if !hasPermission(access, "*") { writeJSON(w, http.StatusForbidden, map[string]string{"error": "administrator permission required"}); return }
+	if !hasPermission(access, "*") {
+		writeJSON(w, http.StatusForbidden, map[string]string{"error": "administrator permission required"})
+		return
+	}
 	var input globalIDRequest
-	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<20)).Decode(&input); err != nil { writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid JSON body"}); return }
-	input.EntityType = strings.TrimSpace(input.EntityType); input.Source = strings.TrimSpace(input.Source); input.SourceID = strings.TrimSpace(input.SourceID)
-	if input.EntityType == "" || input.Source == "" || input.SourceID == "" { writeJSON(w, http.StatusBadRequest, map[string]string{"error": "entity_type, source and source_id are required"}); return }
+	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<20)).Decode(&input); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid JSON body"})
+		return
+	}
+	input.EntityType = strings.TrimSpace(input.EntityType)
+	input.Source = strings.TrimSpace(input.Source)
+	input.SourceID = strings.TrimSpace(input.SourceID)
+	if input.EntityType == "" || input.Source == "" || input.SourceID == "" {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "entity_type, source and source_id are required"})
+		return
+	}
 	entity, err := a.db.CreateGlobalEntity(r.Context(), input.EntityType, input.Source, input.SourceID, strings.TrimSpace(input.TenantID), input.Metadata)
-	if err != nil { writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()}); return }
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+		return
+	}
 	a.audit(r, access, "global_id.created", input.EntityType, entity.GlobalID, map[string]any{"source": input.Source, "source_id": input.SourceID})
 	a.publish("global_id.created", entity)
 	writeJSON(w, http.StatusCreated, entity)
@@ -266,11 +334,20 @@ func (a *app) resolveGlobalID(w http.ResponseWriter, r *http.Request) {
 	info := r.Context().Value(userContextKey).(userInfo)
 	globalUserID := r.Context().Value(globalUserContextKey).(string)
 	access := resolveAccess(info, globalUserID)
-	if !hasPermission(access, "*") { writeJSON(w, http.StatusForbidden, map[string]string{"error": "administrator permission required"}); return }
+	if !hasPermission(access, "*") {
+		writeJSON(w, http.StatusForbidden, map[string]string{"error": "administrator permission required"})
+		return
+	}
 	id := strings.TrimPrefix(r.URL.Path, "/api/v1/global-ids/")
-	if id == "" { writeJSON(w, http.StatusBadRequest, map[string]string{"error": "Global ID is required"}); return }
+	if id == "" {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "Global ID is required"})
+		return
+	}
 	entity, err := a.db.ResolveGlobalEntity(r.Context(), id)
-	if err != nil { writeJSON(w, http.StatusNotFound, map[string]string{"error": "Global ID not found"}); return }
+	if err != nil {
+		writeJSON(w, http.StatusNotFound, map[string]string{"error": "Global ID not found"})
+		return
+	}
 	a.audit(r, access, "global_id.read", entity.EntityType, entity.GlobalID, nil)
 	writeJSON(w, http.StatusOK, entity)
 }
@@ -279,10 +356,16 @@ func (a *app) auditEvents(w http.ResponseWriter, r *http.Request) {
 	info := r.Context().Value(userContextKey).(userInfo)
 	globalUserID := r.Context().Value(globalUserContextKey).(string)
 	access := resolveAccess(info, globalUserID)
-	if !hasPermission(access, "*") { writeJSON(w, http.StatusForbidden, map[string]string{"error": "administrator permission required"}); return }
+	if !hasPermission(access, "*") {
+		writeJSON(w, http.StatusForbidden, map[string]string{"error": "administrator permission required"})
+		return
+	}
 	limit, _ := strconv.Atoi(r.URL.Query().Get("limit"))
 	events, err := a.db.ListAudit(r.Context(), limit)
-	if err != nil { writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "audit store unavailable"}); return }
+	if err != nil {
+		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "audit store unavailable"})
+		return
+	}
 	writeJSON(w, http.StatusOK, events)
 }
 
@@ -290,13 +373,20 @@ func main() {
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
 	db, err := platformdb.Open(ctx, os.Getenv("DATABASE_URL"))
-	if err != nil { log.Fatalf("database initialization failed: %v", err) }
+	if err != nil {
+		log.Fatalf("database initialization failed: %v", err)
+	}
 	defer db.Close()
 
 	var nc *nats.Conn
 	if natsURL := os.Getenv("NATS_URL"); natsURL != "" {
 		nc, err = nats.Connect(natsURL, nats.Name("bsystem-integration-core"), nats.Timeout(5*time.Second), nats.MaxReconnects(-1))
-		if err != nil { log.Printf("NATS unavailable at startup: %v", err); nc = nil } else { defer nc.Close() }
+		if err != nil {
+			log.Printf("NATS unavailable at startup: %v", err)
+			nc = nil
+		} else {
+			defer nc.Close()
+		}
 	}
 	a := &app{db: db, nc: nc}
 
@@ -311,12 +401,15 @@ func main() {
 	protectedMux.HandleFunc("GET /api/v1/audit", a.auditEvents)
 
 	root := http.NewServeMux()
+	registerServiceRoutes(root, a)
 	root.Handle("/api/", a.authenticate(protectedMux))
 	root.Handle("/health", publicMux)
 
 	addr := os.Getenv("HTTP_ADDR")
-	if addr == "" { addr = ":8080" }
-	server := &http.Server{Addr: addr, Handler: requestID(root), ReadHeaderTimeout: 5*time.Second, ReadTimeout: 15*time.Second, WriteTimeout: 15*time.Second, IdleTimeout: 60*time.Second}
-	log.Printf("bsystem-integration-core v0.3.0 listening on %s", addr)
+	if addr == "" {
+		addr = ":8080"
+	}
+	server := &http.Server{Addr: addr, Handler: requestID(root), ReadHeaderTimeout: 5 * time.Second, ReadTimeout: 15 * time.Second, WriteTimeout: 15 * time.Second, IdleTimeout: 60 * time.Second}
+	log.Printf("bsystem-integration-core v0.4.0 listening on %s", addr)
 	log.Fatal(server.ListenAndServe())
 }
