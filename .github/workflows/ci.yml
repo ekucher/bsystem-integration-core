@@ -12,6 +12,22 @@ permissions:
 jobs:
   build:
     runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:17-alpine
+        env:
+          POSTGRES_USER: bsystem
+          POSTGRES_PASSWORD: bsystem_ci_password
+          POSTGRES_DB: bsystem_integration
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U bsystem -d bsystem_integration"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      TEST_DATABASE_URL: postgres://bsystem:bsystem_ci_password@127.0.0.1:5432/bsystem_integration?sslmode=disable
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -20,7 +36,10 @@ jobs:
         uses: actions/setup-go@v5
         with:
           go-version: "1.26.x"
-          cache: true
+          cache: false
+
+      - name: Download dependencies
+        run: go mod download
 
       - name: Format check
         run: test -z "$(gofmt -l .)"
