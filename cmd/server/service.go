@@ -6,6 +6,7 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"strconv"
 	"strings"
 	"time"
 
@@ -35,36 +36,85 @@ const (
 
 var adapterRegistry = adapters.NewRegistry()
 
+// adapterResilience reads the shared upstream resilience policy from the
+// environment. The defaults are the production ones; a deployment overrides
+// them when its upstreams behave differently, and the E2E stack shortens the
+// circuit window so recovery is observable within a test run.
+func adapterResilience() adapters.Config {
+	return adapters.Config{
+		Timeout:                 durationEnv("ADAPTER_TIMEOUT", 10*time.Second),
+		RetryAttempts:           intEnv("ADAPTER_RETRY_ATTEMPTS", 0),
+		CircuitFailureThreshold: intEnv("ADAPTER_CIRCUIT_FAILURE_THRESHOLD", 0),
+		CircuitOpenFor:          durationEnv("ADAPTER_CIRCUIT_OPEN_FOR", 0),
+	}
+}
+
+func durationEnv(name string, fallback time.Duration) time.Duration {
+	value, err := time.ParseDuration(strings.TrimSpace(os.Getenv(name)))
+	if err != nil || value < 0 {
+		return fallback
+	}
+	return value
+}
+
+func intEnv(name string, fallback int) int {
+	value, err := strconv.Atoi(strings.TrimSpace(os.Getenv(name)))
+	if err != nil {
+		return fallback
+	}
+	return value
+}
+
+// disabledAdapter registers a placeholder so that an unconfigured upstream is
+// reported as disabled rather than being absent: the registry always
+// describes the whole intended surface.
+func disabledAdapter(id, name string, capabilities []string) adapters.Mock {
+	return adapters.Mock{
+		AdapterInfo:   adapters.Info{ID: id, Name: name, Version: "0", Status: adapters.StatusDisabled, Capabilities: capabilities},
+		AdapterHealth: adapters.Health{Status: adapters.StatusDisabled, Message: "not configured"},
+	}
+}
+
 func init() {
-	if rawURL := strings.TrimSpace(os.Getenv("ESPOCRM_URL")); rawURL != "" {
-		client, err := espocrm.New(rawURL, os.Getenv("ESPOCRM_API_KEY"), 10*time.Second)
-		if err != nil {
+	resilience := adapterResilience()
+
+	config := resilience
+	config.BaseURL, config.APIKey = strings.TrimSpace(os.Getenv("ESPOCRM_URL")), os.Getenv("ESPOCRM_API_KEY")
+	if config.BaseURL != "" {
+		if client, err := espocrm.New(config); err != nil {
 			log.Printf("EspoCRM adapter disabled: %v", err)
 		} else {
 			_ = adapterRegistry.Register(client)
 		}
-	} else {
-		_ = adapterRegistry.Register(adapters.Mock{AdapterInfo: adapters.Info{ID: "espocrm", Name: "EspoCRM", Version: "0", Status: adapters.StatusDisabled, Capabilities: []string{"clients.read", "contacts.read"}}, AdapterHealth: adapters.Health{Status: adapters.StatusDisabled, Message: "not configured"}})
 	}
-	if rawURL := strings.TrimSpace(os.Getenv("REDMINE_URL")); rawURL != "" {
-		client, err := redmine.New(rawURL, os.Getenv("REDMINE_API_KEY"), 10*time.Second)
-		if err != nil {
+	if _, registered := adapterRegistry.Get("espocrm"); !registered {
+		_ = adapterRegistry.Register(disabledAdapter("espocrm", "EspoCRM", []string{"clients.read", "contacts.read"}))
+	}
+
+	config = resilience
+	config.BaseURL, config.APIKey = strings.TrimSpace(os.Getenv("REDMINE_URL")), os.Getenv("REDMINE_API_KEY")
+	if config.BaseURL != "" {
+		if client, err := redmine.New(config); err != nil {
 			log.Printf("Redmine adapter disabled: %v", err)
 		} else {
 			_ = adapterRegistry.Register(client)
 		}
-	} else {
-		_ = adapterRegistry.Register(adapters.Mock{AdapterInfo: adapters.Info{ID: "redmine", Name: "Redmine", Version: "0", Status: adapters.StatusDisabled, Capabilities: []string{"projects.read", "issues.read"}}, AdapterHealth: adapters.Health{Status: adapters.StatusDisabled, Message: "not configured"}})
 	}
-	if rawURL := strings.TrimSpace(os.Getenv("OUTLINE_URL")); rawURL != "" {
-		client, err := outline.New(rawURL, os.Getenv("OUTLINE_API_KEY"), 10*time.Second)
-		if err != nil {
+	if _, registered := adapterRegistry.Get("redmine"); !registered {
+		_ = adapterRegistry.Register(disabledAdapter("redmine", "Redmine", []string{"projects.read", "issues.read"}))
+	}
+
+	config = resilience
+	config.BaseURL, config.APIKey = strings.TrimSpace(os.Getenv("OUTLINE_URL")), os.Getenv("OUTLINE_API_KEY")
+	if config.BaseURL != "" {
+		if client, err := outline.New(config); err != nil {
 			log.Printf("Outline adapter disabled: %v", err)
 		} else {
 			_ = adapterRegistry.Register(client)
 		}
-	} else {
-		_ = adapterRegistry.Register(adapters.Mock{AdapterInfo: adapters.Info{ID: "outline", Name: "Outline", Version: "0", Status: adapters.StatusDisabled, Capabilities: []string{"documents.read"}}, AdapterHealth: adapters.Health{Status: adapters.StatusDisabled, Message: "not configured"}})
+	}
+	if _, registered := adapterRegistry.Get("outline"); !registered {
+		_ = adapterRegistry.Register(disabledAdapter("outline", "Outline", []string{"documents.read", "documents.search"}))
 	}
 }
 

@@ -30,7 +30,7 @@ func TestListAccountsAndHealth(t *testing.T) {
 	server := httptest.NewServer(mux)
 	defer server.Close()
 
-	client, err := New(server.URL, "secret", time.Second)
+	client, err := New(adapters.Config{BaseURL: server.URL, APIKey: "secret", Timeout: time.Second})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -70,7 +70,7 @@ func TestListAccountsPaginates(t *testing.T) {
 	})
 	server := httptest.NewServer(mux)
 	defer server.Close()
-	client, err := New(server.URL, "secret", time.Second)
+	client, err := New(adapters.Config{BaseURL: server.URL, APIKey: "secret", Timeout: time.Second})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -127,7 +127,7 @@ func TestPageSizeIsBounded(t *testing.T) {
 				_, _ = w.Write([]byte(`{"total":0,"list":[]}`))
 			}))
 			defer server.Close()
-			client, err := New(server.URL, "secret", time.Second)
+			client, err := New(adapters.Config{BaseURL: server.URL, APIKey: "secret", Timeout: time.Second})
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -148,7 +148,7 @@ func TestForgedCursorIsRejected(t *testing.T) {
 		_, _ = w.Write([]byte(`{"total":0,"list":[]}`))
 	}))
 	defer server.Close()
-	client, err := New(server.URL, "secret", time.Second)
+	client, err := New(adapters.Config{BaseURL: server.URL, APIKey: "secret", Timeout: time.Second})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -162,7 +162,7 @@ func TestHTTPFailure(t *testing.T) {
 		http.Error(w, "boom", http.StatusBadGateway)
 	}))
 	defer server.Close()
-	client, err := New(server.URL, "", time.Second)
+	client, err := New(adapters.Config{BaseURL: server.URL, APIKey: "", Timeout: time.Second})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -190,7 +190,7 @@ func newDetailClient(t *testing.T) *Client {
 	})
 	server := httptest.NewServer(mux)
 	t.Cleanup(server.Close)
-	client, err := New(server.URL, "secret", time.Second)
+	client, err := New(adapters.Config{BaseURL: server.URL, APIKey: "secret", Timeout: time.Second})
 	if err != nil {
 		t.Fatalf("build client: %v", err)
 	}
@@ -248,7 +248,7 @@ func TestUpstreamFailureIsNotReportedAsNotFound(t *testing.T) {
 	})
 	server := httptest.NewServer(mux)
 	t.Cleanup(server.Close)
-	client, err := New(server.URL, "secret", time.Second)
+	client, err := New(adapters.Config{BaseURL: server.URL, APIKey: "secret", Timeout: time.Second})
 	if err != nil {
 		t.Fatalf("build client: %v", err)
 	}

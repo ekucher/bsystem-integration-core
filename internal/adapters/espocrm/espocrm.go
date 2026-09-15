@@ -10,7 +10,6 @@ import (
 	"net/url"
 	"strconv"
 	"strings"
-	"time"
 
 	"github.com/ekucher/bsystem-integration-core/internal/adapters"
 	"github.com/ekucher/bsystem-integration-core/internal/adapters/httpx"
@@ -56,13 +55,13 @@ const (
 )
 
 // New returns a client for the EspoCRM instance at rawURL.
-func New(rawURL, apiKey string, timeout time.Duration) (*Client, error) {
-	client, err := httpx.New(httpx.Options{Adapter: "espocrm", BaseURL: rawURL, Timeout: timeout})
+func New(config adapters.Config) (*Client, error) {
+	client, err := httpx.New(httpx.OptionsFor("espocrm", config))
 	if err != nil {
 		return nil, err
 	}
 	header := http.Header{}
-	if key := strings.TrimSpace(apiKey); key != "" {
+	if key := strings.TrimSpace(config.APIKey); key != "" {
 		header.Set("X-Api-Key", key)
 	}
 	return &Client{http: client, header: header}, nil

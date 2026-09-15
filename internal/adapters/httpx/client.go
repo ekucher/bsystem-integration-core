@@ -12,6 +12,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/ekucher/bsystem-integration-core/internal/adapters"
 )
 
 // RetryPolicy bounds how hard an adapter tries.
@@ -343,4 +345,32 @@ func sleepContext(ctx context.Context, delay time.Duration) error {
 	case <-ctx.Done():
 		return ctx.Err()
 	}
+}
+
+// OptionsFor turns an adapter configuration into client options, applying the
+// package defaults for anything the configuration leaves unset.
+func OptionsFor(adapter string, config adapters.Config) Options {
+	options := Options{
+		Adapter:      adapter,
+		BaseURL:      config.BaseURL,
+		Timeout:      config.Timeout,
+		MaxBodyBytes: config.MaxBodyBytes,
+		Retry:        DefaultRetryPolicy(),
+		Breaker:      DefaultBreakerSettings(),
+	}
+	if config.RetryAttempts > 0 {
+		options.Retry.MaxAttempts = config.RetryAttempts
+	}
+	switch {
+	case config.CircuitFailureThreshold < 0:
+		// Negative disables the breaker outright, which a deployment may want
+		// when something upstream already sheds load.
+		options.Breaker.FailureThreshold = 0
+	case config.CircuitFailureThreshold > 0:
+		options.Breaker.FailureThreshold = config.CircuitFailureThreshold
+	}
+	if config.CircuitOpenFor > 0 {
+		options.Breaker.OpenFor = config.CircuitOpenFor
+	}
+	return options
 }

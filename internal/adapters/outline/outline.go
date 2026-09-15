@@ -9,7 +9,6 @@ import (
 	"errors"
 	"net/http"
 	"strings"
-	"time"
 
 	"github.com/ekucher/bsystem-integration-core/internal/adapters"
 	"github.com/ekucher/bsystem-integration-core/internal/adapters/httpx"
@@ -61,12 +60,12 @@ const (
 
 // New returns a client for the Outline instance at rawURL. Outline has no
 // anonymous read surface, so an API key is required rather than optional.
-func New(rawURL, apiKey string, timeout time.Duration) (*Client, error) {
-	key := strings.TrimSpace(apiKey)
+func New(config adapters.Config) (*Client, error) {
+	key := strings.TrimSpace(config.APIKey)
 	if key == "" {
 		return nil, errors.New("Outline API key is required")
 	}
-	client, err := httpx.New(httpx.Options{Adapter: "outline", BaseURL: rawURL, Timeout: timeout})
+	client, err := httpx.New(httpx.OptionsFor("outline", config))
 	if err != nil {
 		return nil, err
 	}

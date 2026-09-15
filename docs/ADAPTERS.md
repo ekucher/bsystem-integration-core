@@ -17,6 +17,16 @@ Each is configured by a URL and an API key from the environment. An adapter
 whose URL is unset registers as `disabled` rather than being absent, so the
 registry always describes the whole intended surface.
 
+The resilience policy is shared and configurable, because the right bounds
+depend on the deployment. The defaults are the production ones:
+
+| Variable | Default | Effect |
+| --- | --- | --- |
+| `ADAPTER_TIMEOUT` | `10s` | bounds one attempt |
+| `ADAPTER_RETRY_ATTEMPTS` | `3` | total attempts for an idempotent request |
+| `ADAPTER_CIRCUIT_FAILURE_THRESHOLD` | `5` | consecutive failures that open the circuit; negative disables the breaker |
+| `ADAPTER_CIRCUIT_OPEN_FOR` | `30s` | how long load is shed before probing |
+
 ## Common interface
 
 ```go
@@ -45,6 +55,7 @@ resilience policy once. See
 | Idempotency | explicit per request, because Outline reads over POST |
 | `Retry-After` | honoured in both header forms, never beyond the cap |
 | Circuit breaker | opens after 5 consecutive retryable failures, 30s, then one probe |
+| Configurable | `ADAPTER_TIMEOUT`, `ADAPTER_RETRY_ATTEMPTS`, `ADAPTER_CIRCUIT_FAILURE_THRESHOLD`, `ADAPTER_CIRCUIT_OPEN_FOR` |
 | Errors | name the adapter, kind and status only — no URL, header, query or upstream body |
 
 ### Failure kinds

@@ -22,7 +22,7 @@ func newTestClient(t *testing.T, mux *http.ServeMux) *Client {
 	t.Helper()
 	server := httptest.NewServer(mux)
 	t.Cleanup(server.Close)
-	client, err := New(server.URL, "test-outline-key", time.Second)
+	client, err := New(adapters.Config{BaseURL: server.URL, APIKey: "test-outline-key", Timeout: time.Second})
 	if err != nil {
 		t.Fatalf("build client: %v", err)
 	}
@@ -278,7 +278,7 @@ func TestNewValidatesConfiguration(t *testing.T) {
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
-			_, err := New(test.url, test.apiKey, time.Second)
+			_, err := New(adapters.Config{BaseURL: test.url, APIKey: test.apiKey, Timeout: time.Second})
 			if test.wantErr != (err != nil) {
 				t.Fatalf("New() error = %v, wantErr = %v", err, test.wantErr)
 			}

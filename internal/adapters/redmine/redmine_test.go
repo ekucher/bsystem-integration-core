@@ -39,7 +39,7 @@ func TestProjectsIssuesAndHealth(t *testing.T) {
 	server := httptest.NewServer(mux)
 	defer server.Close()
 
-	client, err := New(server.URL, "secret", time.Second)
+	client, err := New(adapters.Config{BaseURL: server.URL, APIKey: "secret", Timeout: time.Second})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -85,7 +85,7 @@ func TestIssuePaginationWalksTheFilteredCollection(t *testing.T) {
 	})
 	server := httptest.NewServer(mux)
 	defer server.Close()
-	client, err := New(server.URL, "secret", time.Second)
+	client, err := New(adapters.Config{BaseURL: server.URL, APIKey: "secret", Timeout: time.Second})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -125,7 +125,7 @@ func TestPageSizeIsBoundedToRedminesMaximum(t *testing.T) {
 		_, _ = w.Write([]byte(`{"total_count":0,"projects":[]}`))
 	}))
 	defer server.Close()
-	client, err := New(server.URL, "secret", time.Second)
+	client, err := New(adapters.Config{BaseURL: server.URL, APIKey: "secret", Timeout: time.Second})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -156,7 +156,7 @@ func newDetailClient(t *testing.T) *Client {
 	})
 	server := httptest.NewServer(mux)
 	t.Cleanup(server.Close)
-	client, err := New(server.URL, "secret", time.Second)
+	client, err := New(adapters.Config{BaseURL: server.URL, APIKey: "secret", Timeout: time.Second})
 	if err != nil {
 		t.Fatalf("build client: %v", err)
 	}
