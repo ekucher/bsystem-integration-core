@@ -11,6 +11,16 @@ type AccessProfile struct {
 	Modules     []string `json:"modules"`
 }
 
+type RoleView struct {
+	ID          string   `json:"id"`
+	Name        string   `json:"name"`
+	Kind        string   `json:"kind"`
+	Description string   `json:"description"`
+	Enabled     bool     `json:"enabled"`
+	Permissions []string `json:"permissions"`
+	Modules     []string `json:"modules"`
+}
+
 type ScopeGrant struct {
 	PrincipalType string `json:"principal_type"`
 	PrincipalID   string `json:"principal_id"`
@@ -101,11 +111,73 @@ ORDER BY rm.module_id`, groups, kind)
 	return AccessProfile{Roles: roleNames, Permissions: permissions, Modules: modules}, nil
 }
 
+func (db *DB) ListRoles(ctx context.Context) ([]RoleView, error) {
+	rows, err := db.pool.Query(ctx, `
+SELECT id,name,kind,description,enabled
+FROM roles
+ORDER BY kind,name`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	roles := []RoleView{}
+	for rows.Next() {
+		var role RoleView
+		if err := rows.Scan(&role.ID, &role.Name, &role.Kind, &role.Description, &role.Enabled); err != nil {
+			return nil, err
+		}
+		roles = append(roles, role)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+
+	for i := range roles {
+		permRows, err := db.pool.Query(ctx, `SELECT permission_id FROM role_permissions WHERE role_id=$1 ORDER BY permission_id`, roles[i].ID)
+		if err != nil {
+			return nil, err
+		}
+		for permRows.Next() {
+			var id string
+			if err := permRows.Scan(&id); err != nil {
+				permRows.Close()
+				return nil, err
+			}
+			roles[i].Permissions = append(roles[i].Permissions, id)
+		}
+		permRows.Close()
+
+		moduleRows, err := db.pool.Query(ctx, `SELECT module_id FROM role_modules WHERE role_id=$1 ORDER BY module_id`, roles[i].ID)
+		if err != nil {
+			return nil, err
+		}
+		for moduleRows.Next() {
+			var id string
+			if err := moduleRows.Scan(&id); err != nil {
+				moduleRows.Close()
+				return nil, err
+			}
+			roles[i].Modules = append(roles[i].Modules, id)
+		}
+		moduleRows.Close()
+	}
+	return roles, nil
+}
+
 func (db *DB) AddScopeGrant(ctx context.Context, grant ScopeGrant) error {
 	_, err := db.pool.Exec(ctx, `
 INSERT INTO principal_scopes (principal_type,principal_id,scope_type,scope_id,permission_id)
 VALUES ($1,$2,$3,$4,$5)
 ON CONFLICT DO NOTHING`, grant.PrincipalType, grant.PrincipalID, grant.ScopeType, grant.ScopeID, grant.PermissionID)
+	return err
+}
+
+func (db *DB) DeleteScopeGrant(ctx context.Context, grant ScopeGrant) error {
+	_, err := db.pool.Exec(ctx, `
+DELETE FROM principal_scopes
+WHERE principal_type=$1 AND principal_id=$2 AND scope_type=$3 AND scope_id=$4 AND permission_id=$5`,
+		grant.PrincipalType, grant.PrincipalID, grant.ScopeType, grant.ScopeID, grant.PermissionID)
 	return err
 }
 
