@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/url"
+	"strconv"
 	"strings"
 	"time"
 
@@ -79,9 +80,9 @@ func (c *Client) ListAccounts(ctx context.Context, maxSize int) ([]Account, erro
 	if maxSize <= 0 || maxSize > 200 {
 		maxSize = 50
 	}
-	path := fmt.Sprintf("/api/v1/Account?maxSize=%d&orderBy=name&order=asc", maxSize)
+	q := url.Values{"maxSize": {strconv.Itoa(maxSize)}, "orderBy": {"name"}, "order": {"asc"}}
 	var out listResponse[Account]
-	if err := c.getJSON(ctx, path, &out); err != nil {
+	if err := c.getJSON(ctx, "/api/v1/Account", q, &out); err != nil {
 		return nil, err
 	}
 	return out.List, nil
@@ -91,16 +92,16 @@ func (c *Client) ListContacts(ctx context.Context, maxSize int) ([]Contact, erro
 	if maxSize <= 0 || maxSize > 200 {
 		maxSize = 50
 	}
-	path := fmt.Sprintf("/api/v1/Contact?maxSize=%d&orderBy=name&order=asc", maxSize)
+	q := url.Values{"maxSize": {strconv.Itoa(maxSize)}, "orderBy": {"name"}, "order": {"asc"}}
 	var out listResponse[Contact]
-	if err := c.getJSON(ctx, path, &out); err != nil {
+	if err := c.getJSON(ctx, "/api/v1/Contact", q, &out); err != nil {
 		return nil, err
 	}
 	return out.List, nil
 }
 
-func (c *Client) getJSON(ctx context.Context, path string, out any) error {
-	req, err := c.request(ctx, http.MethodGet, path, nil)
+func (c *Client) getJSON(ctx context.Context, path string, query url.Values, out any) error {
+	req, err := c.request(ctx, http.MethodGet, path, query)
 	if err != nil {
 		return err
 	}
@@ -118,10 +119,12 @@ func (c *Client) getJSON(ctx context.Context, path string, out any) error {
 	return nil
 }
 
-func (c *Client) request(ctx context.Context, method, path string, body any) (*http.Request, error) {
-	_ = body
+func (c *Client) request(ctx context.Context, method, path string, query url.Values) (*http.Request, error) {
 	u := *c.baseURL
 	u.Path = strings.TrimRight(c.baseURL.Path, "/") + path
+	if query != nil {
+		u.RawQuery = query.Encode()
+	}
 	req, err := http.NewRequestWithContext(ctx, method, u.String(), nil)
 	if err != nil {
 		return nil, err
