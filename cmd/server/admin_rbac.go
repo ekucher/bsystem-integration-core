@@ -117,12 +117,3 @@ func (a *app) adminDeleteScope(w http.ResponseWriter, r *http.Request) {
 	a.audit(r, access, "rbac.scope.revoked", grant.ScopeType, grant.ScopeID, map[string]any{"principal_type": grant.PrincipalType, "principal_id": grant.PrincipalID, "permission": grant.PermissionID})
 	writeJSON(w, http.StatusOK, grant)
 }
-
-func registerAdminRBACRootRoutes(root *http.ServeMux, a *app) {
-	adminMux := http.NewServeMux()
-	adminMux.HandleFunc("GET /api/v1/admin/rbac/roles", a.adminRoles)
-	adminMux.HandleFunc("GET /api/v1/admin/rbac/scopes", a.adminListScopes)
-	adminMux.HandleFunc("POST /api/v1/admin/rbac/scopes", a.adminAddScope)
-	adminMux.HandleFunc("DELETE /api/v1/admin/rbac/scopes", a.adminDeleteScope)
-	root.Handle("/api/v1/admin/rbac/", a.authenticate(adminMux))
-}

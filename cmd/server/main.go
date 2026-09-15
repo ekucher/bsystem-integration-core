@@ -329,7 +329,7 @@ func (a *app) resolveGlobalID(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusForbidden, map[string]string{"error": "administrator permission required"})
 		return
 	}
-	id := strings.TrimPrefix(r.URL.Path, "/api/v1/global-ids/")
+	id := strings.TrimSpace(r.PathValue("id"))
 	if id == "" {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "Global ID is required"})
 		return
@@ -385,26 +385,11 @@ func main() {
 	}
 	a := &app{db: db, nc: nc}
 
-	publicMux := http.NewServeMux()
-	publicMux.HandleFunc("GET /health", a.health)
-
-	protectedMux := http.NewServeMux()
-	protectedMux.HandleFunc("GET /api/v1/me", a.me)
-	protectedMux.HandleFunc("GET /api/v1/modules", a.modules)
-	protectedMux.HandleFunc("POST /api/v1/global-ids", a.createGlobalID)
-	protectedMux.HandleFunc("GET /api/v1/global-ids/", a.resolveGlobalID)
-	protectedMux.HandleFunc("GET /api/v1/audit", a.auditEvents)
-
-	root := http.NewServeMux()
-	registerServiceRoutes(root, a)
-	root.Handle("/api/", a.authenticate(protectedMux))
-	root.Handle("/health", publicMux)
-
 	addr := os.Getenv("HTTP_ADDR")
 	if addr == "" {
 		addr = ":8080"
 	}
-	server := &http.Server{Addr: addr, Handler: requestID(root), ReadHeaderTimeout: 5 * time.Second, ReadTimeout: 15 * time.Second, WriteTimeout: 15 * time.Second, IdleTimeout: 60 * time.Second}
+	server := &http.Server{Addr: addr, Handler: a.handler(), ReadHeaderTimeout: 5 * time.Second, ReadTimeout: 15 * time.Second, WriteTimeout: 15 * time.Second, IdleTimeout: 60 * time.Second}
 	log.Printf("bsystem-integration-core v0.5.0 listening on %s", addr)
 	log.Fatal(server.ListenAndServe())
 }

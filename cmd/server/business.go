@@ -279,11 +279,3 @@ func (a *app) listDocuments(w http.ResponseWriter, r *http.Request) {
 	}
 	writeJSON(w, http.StatusOK, result)
 }
-
-func registerBusinessRoutes(mux *http.ServeMux, a *app) {
-	mux.HandleFunc("GET /api/v1/clients", a.listClients)
-	mux.HandleFunc("GET /api/v1/contacts", a.listContacts)
-	mux.HandleFunc("GET /api/v1/projects", a.listProjects)
-	mux.HandleFunc("GET /api/v1/issues", a.listIssues)
-	mux.HandleFunc("GET /api/v1/documents", a.listDocuments)
-}

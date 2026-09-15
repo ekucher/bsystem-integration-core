@@ -56,8 +56,3 @@ func (a *app) metrics(w http.ResponseWriter, r *http.Request) {
 		fmt.Fprintf(w, "bsystem_adapter_ready{adapter=%q} %d\n", id, ready)
 	}
 }
-
-func registerOperationsRoutes(root *http.ServeMux, a *app) {
-	root.HandleFunc("GET /readyz", a.readiness)
-	root.HandleFunc("GET /metrics", a.metrics)
-}
