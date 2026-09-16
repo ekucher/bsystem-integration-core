@@ -383,6 +383,14 @@ paths:
           content:
             application/json:
               schema: {$ref: '#/components/schemas/Client'}
+              example:
+                id: CL-000001
+                source: espocrm
+                source_id: acc-northwind
+                name: Northwind Trading
+                website: 'https://northwind.example'
+                email: info@northwind.example
+
         '401': {$ref: '#/components/responses/Unauthorized'}
         '403': {$ref: '#/components/responses/Forbidden'}
         '404': {$ref: '#/components/responses/NotFound'}
@@ -412,6 +420,14 @@ paths:
           content:
             application/json:
               schema: {$ref: '#/components/schemas/Contact'}
+              example:
+                id: CT-000002
+                source: espocrm
+                source_id: con-ada
+                name: Ada Okafor
+                client_id: CL-000001
+                email: ada.okafor@northwind.example
+
         '401': {$ref: '#/components/responses/Unauthorized'}
         '403': {$ref: '#/components/responses/Forbidden'}
         '404': {$ref: '#/components/responses/NotFound'}
@@ -438,6 +454,14 @@ paths:
           content:
             application/json:
               schema: {$ref: '#/components/schemas/Project'}
+              example:
+                id: PR-000003
+                source: redmine
+                source_id: '7'
+                name: Billing platform
+                identifier: billing-platform
+                description: Invoicing and payment reconciliation.
+
         '401': {$ref: '#/components/responses/Unauthorized'}
         '403': {$ref: '#/components/responses/Forbidden'}
         '404': {$ref: '#/components/responses/NotFound'}
@@ -464,6 +488,14 @@ paths:
           content:
             application/json:
               schema: {$ref: '#/components/schemas/Issue'}
+              example:
+                id: TSK-000011
+                source: redmine
+                source_id: '412'
+                subject: Reconcile duplicate invoice lines
+                project_id: PR-000003
+                status: In Progress
+
         '401': {$ref: '#/components/responses/Unauthorized'}
         '403': {$ref: '#/components/responses/Forbidden'}
         '404': {$ref: '#/components/responses/NotFound'}
@@ -490,6 +522,15 @@ paths:
           content:
             application/json:
               schema: {$ref: '#/components/schemas/Document'}
+              example:
+                id: DOC-000005
+                source: outline
+                source_id: doc-runbook-billing
+                title: Billing runbook
+                url: 'https://outline.example/doc/billing-runbook'
+                collection_id: col-operations
+                updated_at: '2026-09-15T18:42:00Z'
+
         '401': {$ref: '#/components/responses/Unauthorized'}
         '403': {$ref: '#/components/responses/Forbidden'}
         '404': {$ref: '#/components/responses/NotFound'}
@@ -719,6 +760,24 @@ paths:
                       data:
                         type: array
                         items: {$ref: '#/components/schemas/SupportRecord'}
+              example:
+                data:
+                  - id: INC-000004
+                    kind: incident
+                    title: Checkout latency above threshold
+                    summary: Sustained p95 latency on the ordering path.
+                    severity: high
+                    status: acknowledged
+                    client_id: CL-000001
+                    relations:
+                      - {entity_type: server, global_id: SRV-000002}
+                    reported_by: USR-000007
+                    created_at: '2026-09-16T06:10:00Z'
+                    updated_at: '2026-09-16T06:24:00Z'
+                    acknowledged_at: '2026-09-16T06:24:00Z'
+                    sla: {state: unset}
+                pagination: {total: 1, limit: 50}
+
         '400':
           description: A filter names a value outside its vocabulary.
           content:
@@ -763,6 +822,21 @@ paths:
           content:
             application/json:
               schema: {$ref: '#/components/schemas/SupportRecord'}
+              example:
+                id: INC-000004
+                kind: incident
+                title: Checkout latency above threshold
+                summary: Sustained p95 latency on the ordering path.
+                severity: high
+                status: new
+                client_id: CL-000001
+                relations:
+                  - {entity_type: server, global_id: SRV-000002}
+                reported_by: USR-000007
+                created_at: '2026-09-16T06:10:00Z'
+                updated_at: '2026-09-16T06:10:00Z'
+                sla: {state: unset}
+
         '400':
           description: A required field is missing, or a value or relation does not resolve.
           content:
@@ -794,6 +868,22 @@ paths:
           content:
             application/json:
               schema: {$ref: '#/components/schemas/SupportRecord'}
+              example:
+                id: INC-000004
+                kind: incident
+                title: Checkout latency above threshold
+                summary: Sustained p95 latency on the ordering path.
+                severity: high
+                status: acknowledged
+                client_id: CL-000001
+                relations:
+                  - {entity_type: server, global_id: SRV-000002}
+                reported_by: USR-000007
+                created_at: '2026-09-16T06:10:00Z'
+                updated_at: '2026-09-16T06:24:00Z'
+                acknowledged_at: '2026-09-16T06:24:00Z'
+                sla: {state: unset}
+
         '401': {$ref: '#/components/responses/Unauthorized'}
         '403': {$ref: '#/components/responses/Forbidden'}
         '404': {$ref: '#/components/responses/NotFound'}
@@ -835,6 +925,23 @@ paths:
           content:
             application/json:
               schema: {$ref: '#/components/schemas/SupportRecord'}
+              example:
+                id: INC-000004
+                kind: incident
+                title: Checkout latency above threshold
+                summary: Sustained p95 latency on the ordering path.
+                severity: high
+                status: resolved
+                client_id: CL-000001
+                relations:
+                  - {entity_type: server, global_id: SRV-000002}
+                reported_by: USR-000007
+                created_at: '2026-09-16T06:10:00Z'
+                updated_at: '2026-09-16T07:05:00Z'
+                acknowledged_at: '2026-09-16T06:24:00Z'
+                resolved_at: '2026-09-16T07:05:00Z'
+                sla: {state: unset}
+
         '400':
           description: A value is outside its vocabulary, or a relation does not resolve.
           content:
@@ -934,6 +1041,18 @@ paths:
           content:
             application/json:
               schema: {$ref: '#/components/schemas/Server'}
+              example:
+                id: SRV-000002
+                name: billing-api-01
+                environment: stage
+                status: ok
+                client_id: CL-000001
+                project_id: PR-000003
+                source: inventory
+                source_id: srv-billing-api-01
+                last_event_at: '2026-09-16T06:02:00Z'
+                created_at: '2026-09-10T09:00:00Z'
+
         '401': {$ref: '#/components/responses/Unauthorized'}
         '403': {$ref: '#/components/responses/Forbidden'}
         '404': {$ref: '#/components/responses/NotFound'}

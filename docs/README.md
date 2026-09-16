@@ -53,3 +53,25 @@ with the documents above, the documents above are right.
 
 `ROADMAP.md` is the service's own plan; `bsystem-deploy/TASKS.md` is the
 platform backlog and takes precedence.
+
+## Stage readiness (P17)
+
+- [`MIGRATION-READINESS.md`](MIGRATION-READINESS.md) — every migration audited
+  for order, additivity, locking and rollback, plus what CI proves about
+  applying them to an empty database.
+- [`adapters/ESPOCRM-STAGE.md`](adapters/ESPOCRM-STAGE.md),
+  [`adapters/REDMINE-STAGE.md`](adapters/REDMINE-STAGE.md),
+  [`adapters/OUTLINE-STAGE.md`](adapters/OUTLINE-STAGE.md) — what each adapter
+  requires of a real upstream, and the version-sensitive assumptions to check
+  during acceptance. None of them claims tested live compatibility.
+
+`cmd/mapping-audit` is a read-only diagnostic that reports mapping health —
+invalid Global ID prefixes, one upstream record mapped twice, references to
+Global IDs that do not resolve, and records with no owning client. It writes
+nothing and contacts no source system:
+
+```bash
+DATABASE_URL=... go run ./cmd/mapping-audit -format=json
+```
+
+It exits non-zero when it finds an error, so it can gate an acceptance.

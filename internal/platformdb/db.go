@@ -2,7 +2,9 @@ package platformdb
 
 import (
 	"context"
+	"crypto/sha256"
 	"embed"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -92,6 +94,20 @@ func Open(ctx context.Context, databaseURL string) (*DB, error) {
 func (db *DB) Close()                         { db.pool.Close() }
 func (db *DB) Ping(ctx context.Context) error { return db.pool.Ping(ctx) }
 
+// schemaHistoryDDL records what has been applied.
+//
+// It is created here rather than in a migration file because it has to exist
+// before the first migration can be recorded. Recording is additive: the
+// migrations themselves still run on every startup, exactly as before, because
+// each one is written to be idempotent.
+const schemaHistoryDDL = `
+CREATE TABLE IF NOT EXISTS schema_migrations (
+    name TEXT PRIMARY KEY,
+    checksum TEXT NOT NULL,
+    first_applied_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    last_applied_at TIMESTAMPTZ NOT NULL DEFAULT now()
+)`
+
 func (db *DB) Migrate(ctx context.Context) error {
 	entries, err := migrationsFS.ReadDir("migrations")
 	if err != nil {
@@ -104,6 +120,11 @@ func (db *DB) Migrate(ctx context.Context) error {
 		}
 	}
 	sort.Strings(names)
+
+	if _, err := db.pool.Exec(ctx, schemaHistoryDDL); err != nil {
+		return fmt.Errorf("create schema history: %w", err)
+	}
+
 	for _, name := range names {
 		body, err := migrationsFS.ReadFile("migrations/" + name)
 		if err != nil {
@@ -112,8 +133,63 @@ func (db *DB) Migrate(ctx context.Context) error {
 		if _, err := db.pool.Exec(ctx, string(body)); err != nil {
 			return fmt.Errorf("apply migration %s: %w", name, err)
 		}
+		// The checksum is what makes an edited migration visible. A file that
+		// changed after it was applied leaves a database that no longer
+		// matches the source that is supposed to describe it, and without a
+		// record of the old content nobody can tell.
+		sum := sha256.Sum256(body)
+		if _, err := db.pool.Exec(ctx, `
+INSERT INTO schema_migrations (name, checksum) VALUES ($1,$2)
+ON CONFLICT (name) DO UPDATE SET checksum=EXCLUDED.checksum, last_applied_at=now()`,
+			name, hex.EncodeToString(sum[:])); err != nil {
+			return fmt.Errorf("record migration %s: %w", name, err)
+		}
 	}
 	return nil
+}
+
+// SchemaState describes how far the schema has been taken.
+type SchemaState struct {
+	// Level is the highest applied migration filename, which is also the
+	// schema's version because migrations are applied in filename order.
+	Level string `json:"level"`
+	// Applied is how many migrations the database has recorded.
+	Applied int `json:"applied"`
+}
+
+// SchemaLevel reports the applied schema, for the release manifest and for
+// build metadata. It reads the ledger rather than the embedded files, so it
+// describes the database in front of it rather than the binary asking.
+func (db *DB) SchemaLevel(ctx context.Context) (SchemaState, error) {
+	var state SchemaState
+	err := db.pool.QueryRow(ctx, `SELECT COALESCE(MAX(name),''), COUNT(*) FROM schema_migrations`).
+		Scan(&state.Level, &state.Applied)
+	if err != nil {
+		return SchemaState{}, err
+	}
+	return state, nil
+}
+
+// EmbeddedSchemaLevel reports the highest migration this binary carries.
+//
+// Comparing it with SchemaLevel answers the question that matters during a
+// deployment: is the database behind the code that is talking to it?
+func EmbeddedSchemaLevel() (SchemaState, error) {
+	entries, err := migrationsFS.ReadDir("migrations")
+	if err != nil {
+		return SchemaState{}, err
+	}
+	names := make([]string, 0, len(entries))
+	for _, entry := range entries {
+		if !entry.IsDir() {
+			names = append(names, entry.Name())
+		}
+	}
+	if len(names) == 0 {
+		return SchemaState{}, nil
+	}
+	sort.Strings(names)
+	return SchemaState{Level: names[len(names)-1], Applied: len(names)}, nil
 }
 
 func (db *DB) UpsertIdentity(ctx context.Context, identity Identity) error {
