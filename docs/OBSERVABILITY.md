@@ -86,7 +86,7 @@ alert selects `state="open"` instead of remembering which number means open.
 | --- | --- | --- |
 | `bsystem_database_up` | gauge | — |
 | `bsystem_database_pool_connections` | gauge | `state` |
-| `bsystem_database_pool_acquires_total` | gauge | `outcome` |
+| `bsystem_database_pool_acquires_total` | counter | `outcome` |
 | `bsystem_nats_up` | gauge | — |
 | `bsystem_events_published_total` | counter | `event`, `outcome` |
 
@@ -95,9 +95,43 @@ individual query is fast: requests are waiting for a connection, not for the
 database. `outcome="empty"` counts acquisitions that had to wait for an empty
 pool, which is the early warning.
 
+The pool tallies are sampled from the pool at scrape time rather than mirrored
+into a variable, but they are counters, not gauges: they only ever increase
+within a process, the name says `_total`, and the dashboard takes `rate()` of
+them. They were published as `# TYPE ... gauge` until the contract test below
+was written; `rate()` still computed the right answer, because the values were
+cumulative regardless of what the type line claimed, but promtool and anything
+else that reads the type were being told something untrue.
+
 Event outcomes are counted rather than only logged, because "nothing happened"
 and "everything failed to publish" look identical on a dashboard that counts
 only successes.
+
+## The tables above are enforced
+
+`cmd/server/metrics_contract_test.go` renders the real registry, records one
+observation on every series through its real recording path, and checks the
+result against the same names, types and labels listed here. It also refuses a
+series that nothing documents.
+
+This exists because the endpoint has a consumer that cannot complain: the
+Grafana dashboard in `bsystem-deploy`
+(`observability/grafana/bsystem-platform.json`), and any alert built beside it.
+A query naming a series that does not exist, or grouping by a label the series
+does not carry, returns nothing. Prometheus does not warn and Grafana draws an
+empty panel — and during an incident an empty panel reads as "no traffic"
+rather than "wrong query", which is the worst available moment to discover a
+renamed label.
+
+Two consequences worth knowing before reading a panel as evidence:
+
+- A counter publishes no series until something increments it. On a freshly
+  started platform several panels show "No data", and that is the platform
+  being new rather than the query being wrong.
+- `bsystem_adapter_circuit_state` publishes nothing at all unless some adapter
+  has a circuit breaker. The disabled placeholder that stands in for an
+  unconfigured integration has none, so on a deployment with no integrations
+  configured that panel is empty by design.
 
 ## Sampling
 
