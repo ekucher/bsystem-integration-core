@@ -100,13 +100,28 @@ func (db *DB) Ping(ctx context.Context) error { return db.pool.Ping(ctx) }
 // before the first migration can be recorded. Recording is additive: the
 // migrations themselves still run on every startup, exactly as before, because
 // each one is written to be idempotent.
+// checksum is the hash of the file as it was when this database first applied
+// it, and is never written again. source_checksum is the hash of the file the
+// running binary carries, refreshed on every startup. Keeping both is the whole
+// mechanism: one value that cannot move is what a changing one can be compared
+// against.
 const schemaHistoryDDL = `
 CREATE TABLE IF NOT EXISTS schema_migrations (
     name TEXT PRIMARY KEY,
     checksum TEXT NOT NULL,
+    source_checksum TEXT,
     first_applied_at TIMESTAMPTZ NOT NULL DEFAULT now(),
     last_applied_at TIMESTAMPTZ NOT NULL DEFAULT now()
 )`
+
+// Additive, so a database written by an older build gains the column without
+// losing the checksum it already recorded. Backfilling it to the existing
+// checksum is the honest default: what that database applied is all anyone can
+// know about it, and claiming drift nobody observed would be worse than
+// claiming none.
+const schemaHistoryUpgradeDDL = `
+ALTER TABLE schema_migrations ADD COLUMN IF NOT EXISTS source_checksum TEXT;
+UPDATE schema_migrations SET source_checksum = checksum WHERE source_checksum IS NULL`
 
 func (db *DB) Migrate(ctx context.Context) error {
 	entries, err := migrationsFS.ReadDir("migrations")
@@ -124,6 +139,9 @@ func (db *DB) Migrate(ctx context.Context) error {
 	if _, err := db.pool.Exec(ctx, schemaHistoryDDL); err != nil {
 		return fmt.Errorf("create schema history: %w", err)
 	}
+	if _, err := db.pool.Exec(ctx, schemaHistoryUpgradeDDL); err != nil {
+		return fmt.Errorf("upgrade schema history: %w", err)
+	}
 
 	for _, name := range names {
 		body, err := migrationsFS.ReadFile("migrations/" + name)
@@ -133,15 +151,22 @@ func (db *DB) Migrate(ctx context.Context) error {
 		if _, err := db.pool.Exec(ctx, string(body)); err != nil {
 			return fmt.Errorf("apply migration %s: %w", name, err)
 		}
-		// The checksum is what makes an edited migration visible. A file that
-		// changed after it was applied leaves a database that no longer
-		// matches the source that is supposed to describe it, and without a
-		// record of the old content nobody can tell.
-		sum := sha256.Sum256(body)
+		// The checksum is what makes an edited migration visible, and only if
+		// the first one is left alone. A file that changed after it was
+		// applied leaves a database that no longer matches the source
+		// supposed to describe it; overwriting the recorded hash with the new
+		// file's would destroy the only evidence of that, on the very startup
+		// that should have reported it.
+		//
+		// So checksum is written once and never updated. source_checksum
+		// carries what this binary is running, and the two disagreeing is
+		// drift.
+		digest := sha256.Sum256(body)
+		sum := hex.EncodeToString(digest[:])
 		if _, err := db.pool.Exec(ctx, `
-INSERT INTO schema_migrations (name, checksum) VALUES ($1,$2)
-ON CONFLICT (name) DO UPDATE SET checksum=EXCLUDED.checksum, last_applied_at=now()`,
-			name, hex.EncodeToString(sum[:])); err != nil {
+INSERT INTO schema_migrations (name, checksum, source_checksum) VALUES ($1,$2,$2)
+ON CONFLICT (name) DO UPDATE SET source_checksum=EXCLUDED.source_checksum, last_applied_at=now()`,
+			name, sum); err != nil {
 			return fmt.Errorf("record migration %s: %w", name, err)
 		}
 	}
@@ -155,6 +180,11 @@ type SchemaState struct {
 	Level string `json:"level"`
 	// Applied is how many migrations the database has recorded.
 	Applied int `json:"applied"`
+	// Drifted names the migrations whose file no longer hashes to what this
+	// database applied. Level and Applied cannot show this: an edited
+	// migration keeps its filename, so two deployments report an identical
+	// schema version while holding different schemas.
+	Drifted []string `json:"drifted,omitempty"`
 }
 
 // SchemaLevel reports the applied schema, for the release manifest and for
@@ -165,6 +195,24 @@ func (db *DB) SchemaLevel(ctx context.Context) (SchemaState, error) {
 	err := db.pool.QueryRow(ctx, `SELECT COALESCE(MAX(name),''), COUNT(*) FROM schema_migrations`).
 		Scan(&state.Level, &state.Applied)
 	if err != nil {
+		return SchemaState{}, err
+	}
+	rows, err := db.pool.Query(ctx, `
+SELECT name FROM schema_migrations
+WHERE source_checksum IS NOT NULL AND source_checksum <> checksum
+ORDER BY name`)
+	if err != nil {
+		return SchemaState{}, err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var name string
+		if err := rows.Scan(&name); err != nil {
+			return SchemaState{}, err
+		}
+		state.Drifted = append(state.Drifted, name)
+	}
+	if err := rows.Err(); err != nil {
 		return SchemaState{}, err
 	}
 	return state, nil

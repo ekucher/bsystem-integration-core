@@ -435,6 +435,18 @@ func main() {
 	a.registerPlatformMetrics()
 	a.registerBuildMetrics()
 
+	// Said once, at the moment somebody is watching a deployment. A metric is
+	// how this stays visible afterwards; a log line is how it gets noticed at
+	// all. This does not refuse to start: the schema is applied and the
+	// service works, and turning a bookkeeping divergence into an outage
+	// would make the honest thing to do the expensive one.
+	if state, err := db.SchemaLevel(ctx); err == nil && len(state.Drifted) > 0 {
+		logger.Error("migration files no longer match what this database applied",
+			"migrations", strings.Join(state.Drifted, ","),
+			"level", state.Level,
+			"detail", "this database and one migrated from the current source report the same schema level and hold different schemas")
+	}
+
 	addr := os.Getenv("HTTP_ADDR")
 	if addr == "" {
 		addr = ":8080"

@@ -109,4 +109,24 @@ func (a *app) registerBuildMetrics() {
 			return []observability.Sample{{Labels: []string{state.Level}, Value: float64(state.Applied)}}
 		},
 	)
+
+	// Drift is invisible to every other series here. An edited migration keeps
+	// its filename, so the level and the applied count are identical to a
+	// database that never diverged — this is the only number that differs.
+	// Zero is published rather than nothing, so an operator can tell "no
+	// drift" from "nobody is reporting".
+	metricsRegistry.GaugeFunc(
+		"bsystem_schema_migrations_drifted",
+		"Migrations whose file no longer hashes to what this database applied.",
+		nil,
+		func() []observability.Sample {
+			ctx, cancel := gocontext.WithTimeout(gocontext.Background(), 2*time.Second)
+			defer cancel()
+			state, err := a.db.SchemaLevel(ctx)
+			if err != nil {
+				return nil
+			}
+			return []observability.Sample{{Value: float64(len(state.Drifted))}}
+		},
+	)
 }

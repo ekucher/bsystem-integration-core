@@ -282,6 +282,7 @@ func TestTheMetricsEndpointKeepsItsContract(t *testing.T) {
 		operational := map[string]bool{
 			"bsystem_build_info":                true,
 			"bsystem_schema_migrations_applied": true,
+			"bsystem_schema_migrations_drifted": true,
 		}
 		for name := range parsed.kinds {
 			if _, known := published[name]; known || operational[name] {

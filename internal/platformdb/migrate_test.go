@@ -140,3 +140,90 @@ func TestApplicationStartsAgainstAFreshlyMigratedSchema(t *testing.T) {
 		t.Fatal("a freshly migrated database must carry the seeded roles; deny-by-default with no roles denies everyone")
 	}
 }
+
+// An edited migration must stay visible for as long as the divergence lasts.
+//
+// Migrations are re-applied on every startup and are written to be idempotent,
+// so editing one that a database has already applied does not fail: the file
+// runs, most of its statements no-op, and whatever the edit added is silently
+// absent from that database while a database migrated after the edit has it.
+// Nothing about the filename, the level or the applied count differs, so two
+// deployments report an identical schema version while holding different
+// schemas — and that is the one question the ledger exists to answer.
+//
+// The ledger recorded a checksum and then overwrote it with the new file's on
+// the next startup, destroying the evidence at exactly the moment it became
+// worth having. This test pins that the first checksum survives and that the
+// divergence is reported.
+func TestAnEditedMigrationIsReportedAsDrift(t *testing.T) {
+	adminDSN := os.Getenv("TEST_DATABASE_URL")
+	if adminDSN == "" {
+		t.Skip("TEST_DATABASE_URL is not configured")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
+	defer cancel()
+
+	dsn := migrationDatabase(ctx, t, adminDSN)
+
+	db, err := Open(ctx, dsn)
+	if err != nil {
+		t.Fatalf("first startup: %v", err)
+	}
+	defer db.Close()
+
+	state, err := db.SchemaLevel(ctx)
+	if err != nil {
+		t.Fatalf("read schema level: %v", err)
+	}
+	if state.Applied == 0 {
+		t.Fatal("a migrated database records no migration; the rest of this test would pass vacuously")
+	}
+	if len(state.Drifted) != 0 {
+		t.Fatalf("a freshly migrated database reports drift: %v", state.Drifted)
+	}
+
+	// The migrations are embedded in the binary, so an edit cannot be made on
+	// disk from here. Recording a different hash for what was applied is the
+	// same condition from the other side: the file the binary carries no
+	// longer hashes to what this database applied.
+	const edited = "003_rbac_scopes.sql"
+	const wasApplied = "0000000000000000000000000000000000000000000000000000000000000000"
+	if _, err := db.pool.Exec(ctx,
+		`UPDATE schema_migrations SET checksum=$1 WHERE name=$2`, wasApplied, edited); err != nil {
+		t.Fatalf("simulate an edited migration: %v", err)
+	}
+
+	// The restart is where the old code lost it. Migrate runs, rewrites the
+	// checksum from the file, and the database that had diverged now claims
+	// it never did.
+	restarted, err := Open(ctx, dsn)
+	if err != nil {
+		t.Fatalf("restart: %v", err)
+	}
+	defer restarted.Close()
+
+	state, err = restarted.SchemaLevel(ctx)
+	if err != nil {
+		t.Fatalf("read schema level after restart: %v", err)
+	}
+	if len(state.Drifted) != 1 || state.Drifted[0] != edited {
+		t.Errorf("drifted = %v, want exactly [%s]; a restart must not clear the record of a divergence", state.Drifted, edited)
+	}
+
+	// The evidence itself, not just the verdict. Without the original hash
+	// nobody can tell which of the two contents the database actually holds.
+	var recorded string
+	if err := restarted.pool.QueryRow(ctx,
+		`SELECT checksum FROM schema_migrations WHERE name=$1`, edited).Scan(&recorded); err != nil {
+		t.Fatalf("read recorded checksum: %v", err)
+	}
+	if recorded != wasApplied {
+		t.Errorf("recorded checksum = %q, want the one this database applied; overwriting it destroys the only record of what ran here", recorded)
+	}
+
+	// Drift is specific to the file that moved. Reporting every migration
+	// would be the same as reporting none: nobody would read the list.
+	if state.Applied < 2 {
+		t.Fatal("only one migration recorded; the specificity check below proves nothing")
+	}
+}
