@@ -67,6 +67,7 @@ var published = map[string]series{
 	// No panel yet, but each exists because its absence is invisible: a
 	// pipeline that has silently stopped looks exactly like one with nothing
 	// to do.
+	"bsystem_audit_writes_total":         {"counter", []string{"action", "outcome"}},
 	"bsystem_notifications_raised_total": {"counter", []string{"event", "outcome"}},
 	"bsystem_search_operations_total":    {"counter", []string{"operation", "outcome"}},
 	"bsystem_operations_events_total":    {"counter", []string{"event", "severity"}},
@@ -204,6 +205,7 @@ func metricsApp(t *testing.T) (exposition, string) {
 	// so this pins what the platform emits, not only what it declares.
 	upstream.Attempt("espocrm", "", false, 0.01)
 	upstream.CircuitRejected("espocrm")
+	auditWrites.Inc("global_id.created", "written")
 	eventsPublished.Inc("client.updated", "ok")
 	notificationsRaised.Inc("client.updated", "ok")
 	searchIndexed.Inc("index", "ok")

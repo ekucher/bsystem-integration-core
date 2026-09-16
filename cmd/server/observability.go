@@ -142,6 +142,28 @@ var eventsPublished = metricsRegistry.Counter(
 	"event", "outcome",
 )
 
+// auditWrites counts audit records by action and outcome.
+//
+// The same reasoning as eventsPublished, applied to the record that is least
+// recoverable when it is missing. A failed audit write was only a log line, so
+// a platform whose audit trail had silently stopped being written looked
+// exactly like a quiet one on every dashboard.
+//
+// The asymmetry matters: an event that fails to publish can be re-derived from
+// the state that produced it, and a notification can be raised again. An audit
+// record that was never written cannot be reconstructed from anything, because
+// the whole point of it is to record that something happened to a system that
+// keeps no other trace of who asked.
+//
+// The action is a label and the resource is not: the action is a small closed
+// set, while a resource id is unbounded and would make a new time series per
+// record.
+var auditWrites = metricsRegistry.Counter(
+	"bsystem_audit_writes_total",
+	"Audit records written, by action and outcome.",
+	"action", "outcome",
+)
+
 // notificationsRaised counts notifications the platform raised from events,
 // by outcome. A mapped event that silently fails to become a notification is
 // a message nobody receives, which looks identical to a quiet week.

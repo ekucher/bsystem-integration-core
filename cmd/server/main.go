@@ -290,8 +290,16 @@ func sourceIP(r *http.Request) string {
 func (a *app) audit(r *http.Request, access meResponse, action, resourceType, resourceID string, metadata map[string]any) {
 	err := a.db.InsertAudit(r.Context(), platformdb.AuditEvent{Subject: access.Subject, GlobalUserID: access.ID, Action: action, ResourceType: resourceType, ResourceID: resourceID, RequestID: requestIDFrom(r.Context()), SourceIP: sourceIP(r), Metadata: metadata})
 	if err != nil {
-		logger.ErrorContext(r.Context(), "audit write failed", "error", err.Error())
+		auditWrites.Inc(action, "failed")
+		// The request is not failed here. The action it describes has already
+		// happened and telling the caller otherwise would be a lie in the
+		// other direction — but an action that happened without a record is a
+		// hole in the governance layer, so it is counted rather than only
+		// logged.
+		logger.ErrorContext(r.Context(), "audit write failed", "action", action, "error", err.Error())
+		return
 	}
+	auditWrites.Inc(action, "written")
 }
 
 // publish sends a platform event, recording the outcome.
