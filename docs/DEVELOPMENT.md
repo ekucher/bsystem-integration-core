@@ -20,12 +20,36 @@ declared one, or when a handler emits an error code the schema does not
 document. Adding a route without documenting it does not compile past CI, by
 design.
 
+## Testing a query
+
+The store layer has tests that run against a real PostgreSQL. They skip when
+`TEST_DATABASE_URL` is unset, which is why they look absent locally until you
+point them at a database:
+
+```bash
+# Any PostgreSQL will do; each test creates and drops its own database.
+TEST_DATABASE_URL='postgres://bsystem@127.0.0.1:5432/postgres?sslmode=disable' \
+  go test ./internal/platformdb/ -count=1
+```
+
+A database per test rather than a shared one, deliberately: these tests assert
+counts over "everything visible to this reader", and a row another test left
+behind would make an assertion pass or fail for reasons unrelated to the code
+under test.
+
+What they cover is the part that is invisible in review — the visibility
+predicate that decides which notifications a reader may see, the guarantee that
+an SLA moment is recorded once and never moved, that registering a server
+cannot declare it healthy, and that keyset paging neither skips nor repeats a
+row. Each was verified to fail against a deliberately broken query before being
+committed; a test over SQL that has never been seen to fail proves very little.
+
 ## Running the platform
 
-There is no PostgreSQL in the unit test environment, so the store layer's
-queries first execute in the E2E stack. That is not a preference — it is where
-two real defects have surfaced — so **run the E2E stack before pushing
-anything that touches a query**:
+The store tests do not replace the E2E stack: they exercise queries in
+isolation, while E2E exercises them behind the API with the authorization layer
+in front. Two real defects surfaced there rather than in a unit test, so **run
+the E2E stack before pushing anything that touches a query**:
 
 ```bash
 cd ../bsystem-deploy
