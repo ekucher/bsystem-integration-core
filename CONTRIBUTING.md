@@ -39,6 +39,18 @@ emits that the schema does not list — each fails the build. That is
 deliberate: callers are told to branch on `code`, and an undocumented one makes
 that instruction false.
 
+`internal/repoguard` refuses a compiled executable or an archive tracked in
+Git, by leading bytes rather than by filename, and checks that the default
+build output of every command under `cmd/` is ignored. `go build ./cmd/x` with
+no `-o` writes `./x` in the repository root; this repository carried a 13 MB
+binary committed exactly that way, past `.gitignore` rules covering only the
+directories a build can be told to use. Add a command and the second test tells
+you to add its `/name` line.
+
+Nothing binary is tracked here. If something has to be, add it to the `allowed`
+map in that test with the reason — the point is that it argues for itself in a
+diff somebody reads, which is the one thing a binary blob otherwise escapes.
+
 ## Extending it
 
 `docs/DEVELOPMENT.md` covers adding an endpoint and adding a migration,
