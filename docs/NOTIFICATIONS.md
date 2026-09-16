@@ -69,6 +69,8 @@ on everything would train people to ignore it.
 | `server.offline` | `operations.server.read` | critical |
 | `build.failed` | `development.repo.read` | error |
 | `test.failed` | `qa.testcase.read` | error |
+| `selftest.failed` | `operations.server.read` | error |
+| `server.error` | `operations.server.read` | error |
 | `incident.created` | `support.incident.read` | error |
 | `release.created` | `development.repo.read` | info |
 

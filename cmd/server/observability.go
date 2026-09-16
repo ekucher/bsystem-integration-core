@@ -158,6 +158,15 @@ var searchIndexed = metricsRegistry.Counter(
 	"operation", "outcome",
 )
 
+// operationsReported counts reports by event and severity. A reporter that
+// has gone quiet looks identical to infrastructure with nothing to report,
+// and only the count distinguishes them.
+var operationsReported = metricsRegistry.Counter(
+	"bsystem_operations_events_total",
+	"Operations events reported, by event and severity.",
+	"event", "severity",
+)
+
 var logger = observability.NewLogger(os.Stdout, observability.LevelFromEnv(os.Getenv("LOG_LEVEL")))
 
 // observer wires request logging and metrics onto each route.

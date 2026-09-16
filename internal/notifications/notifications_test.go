@@ -5,7 +5,10 @@ import "testing"
 func TestOnlyMappedEventsRaiseNotifications(t *testing.T) {
 	// The default for an unknown event is to interrupt nobody. A platform
 	// that notified on everything would train people to ignore it.
-	for _, event := range []string{"client.updated", "task.completed", "document.updated", "identity.created", ""} {
+	for _, event := range []string{"client.updated", "task.completed", "document.updated", "identity.created",
+		// Successes and routine maintenance are reported and stored, but
+		// nobody is interrupted by them.
+		"backup.succeeded", "selftest.succeeded", "maintenance.started", "maintenance.completed", "server.ok", ""} {
 		if _, mapped := FromEvent(Event{Event: event, Source: "test"}); mapped {
 			t.Errorf("%q raised a notification but is not in the mapping table", event)
 		}
@@ -22,6 +25,8 @@ func TestMappedEventsCarryTheirAudienceAndSeverity(t *testing.T) {
 		{"server.offline", "operations.server.read", "critical"},
 		{"build.failed", "development.repo.read", "error"},
 		{"test.failed", "qa.testcase.read", "error"},
+		{"selftest.failed", "operations.server.read", "error"},
+		{"server.error", "operations.server.read", "error"},
 		{"incident.created", "support.incident.read", "error"},
 		{"release.created", "development.repo.read", "info"},
 	}
@@ -96,9 +101,9 @@ func TestEveryAudienceIsHeldBySomeRole(t *testing.T) {
 func TestRolesReceiveTheEventsTheyActOn(t *testing.T) {
 	cases := map[string][]string{
 		"QA":        {"test.failed"},
-		"Developer": {"build.failed", "release.created", "test.failed", "backup.failed", "server.offline"},
-		"DevOps":    {"backup.failed", "server.offline", "build.failed", "release.created"},
-		"Support":   {"incident.created", "backup.failed", "server.offline"},
+		"Developer": {"build.failed", "release.created", "test.failed", "backup.failed", "server.offline", "server.error", "selftest.failed"},
+		"DevOps":    {"backup.failed", "server.offline", "server.error", "selftest.failed", "build.failed", "release.created"},
+		"Support":   {"incident.created", "backup.failed", "server.offline", "server.error"},
 	}
 	mappings := Mappings()
 	for role, events := range cases {

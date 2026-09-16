@@ -45,6 +45,12 @@ tags:
     description: Normalized entities sourced from the authoritative systems.
   - name: Global IDs
     description: Immutable platform identifiers for upstream records.
+  - name: Infrastructure
+    description: |
+      Servers the platform mirrors but does not own, and what is reported
+      about them. A reporter says what happened; the platform normalizes,
+      stores, publishes and notifies. Distinct from Operations, which is the
+      platform's own health and metrics.
   - name: Search
     description: |
       Cross-module search over normalized entities. Results are filtered to
@@ -532,6 +538,150 @@ paths:
         '401': {$ref: '#/components/responses/Unauthorized'}
         '403': {$ref: '#/components/responses/Forbidden'}
         '404': {$ref: '#/components/responses/NotFound'}
+        '503': {$ref: '#/components/responses/DependencyUnavailable'}
+
+  /api/v1/servers:
+    get:
+      tags: [Infrastructure]
+      operationId: listServers
+      summary: List servers
+      description: |
+        Requires `operations.server.read` across the platform. A principal
+        granted that permission only inside one scope is refused here and can
+        still read its own servers individually — listing everyone's is a
+        different question from reading your own.
+
+        The cursor is the last Global ID returned rather than an opaque token.
+        It is already a public, immutable identifier the caller has just been
+        given, and encoding it would suggest a position that can drift when it
+        cannot.
+
+        Servers are ordered by Global ID rather than by status or recency,
+        because the order has to stay stable while a page is walked and every
+        other candidate changes whenever a reporter says something.
+      parameters:
+        - name: status
+          in: query
+          required: false
+          schema: {type: string, enum: [ok, warning, error, maintenance, offline, unknown]}
+        - name: environment
+          in: query
+          required: false
+          schema: {type: string, enum: [dev, stage, prod, unknown]}
+        - name: limit
+          in: query
+          required: false
+          schema: {type: integer, minimum: 1, maximum: 100, default: 25}
+        - name: cursor
+          in: query
+          required: false
+          description: The last Global ID from the previous page.
+          schema: {type: string}
+      responses:
+        '200':
+          description: Servers.
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - {$ref: '#/components/schemas/Collection'}
+                  - type: object
+                    properties:
+                      data:
+                        type: array
+                        items: {$ref: '#/components/schemas/Server'}
+              example:
+                data:
+                  - {id: SRV-000001, name: bsystem-app-1, environment: prod, status: ok, client_id: CL-000001, source: bravo, source_id: host-9f2c, last_event_at: '2026-01-06T02:14:00Z', created_at: '2026-01-02T08:00:00Z'}
+                pagination: {total: 1, limit: 1}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '503': {$ref: '#/components/responses/DependencyUnavailable'}
+
+  /api/v1/servers/{id}:
+    get:
+      tags: [Infrastructure]
+      operationId: getServer
+      summary: Read one server
+      description: |
+        Requires `operations.server.read` for this server. A server owned by a
+        customer is evaluated against that client, because that is where a
+        grant would naturally be written — "this customer may see their own
+        infrastructure" is a statement about the customer, not about each
+        machine. A server with no owner is evaluated against itself, so a
+        grant can still name exactly one host.
+
+        A server the caller may not read and one that does not exist are
+        answered identically, so the endpoint cannot be used to enumerate
+        which Global IDs name infrastructure.
+      parameters:
+        - {$ref: '#/components/parameters/GlobalID'}
+      responses:
+        '200':
+          description: The server.
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Server'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '503': {$ref: '#/components/responses/DependencyUnavailable'}
+
+  /api/v1/operations/events:
+    get:
+      tags: [Infrastructure]
+      operationId: listOperationsEvents
+      summary: List operations events
+      description: |
+        Health, backup, self-test and maintenance reports, newest first.
+        Requires `operations.server.read` across the platform.
+
+        An unknown `event` filter is refused rather than ignored: a filter
+        that quietly matched nothing and one that quietly matched everything
+        are both read as "there is nothing".
+      parameters:
+        - name: server_id
+          in: query
+          required: false
+          schema: {type: string, pattern: '^SRV-[0-9]+$'}
+        - name: event
+          in: query
+          required: false
+          schema: {$ref: '#/components/schemas/OperationsEventName'}
+        - name: limit
+          in: query
+          required: false
+          schema: {type: integer, minimum: 1, maximum: 100, default: 25}
+        - name: cursor
+          in: query
+          required: false
+          description: The last event id from the previous page.
+          schema: {type: string}
+      responses:
+        '200':
+          description: Operations events.
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - {$ref: '#/components/schemas/Collection'}
+                  - type: object
+                    properties:
+                      data:
+                        type: array
+                        items: {$ref: '#/components/schemas/OperationsEvent'}
+              example:
+                data:
+                  - {id: 412, server_id: SRV-000001, event: backup.failed, severity: critical, summary: 'nightly backup exited 1', source: bravo, correlation_id: 4f1c2a, occurred_at: '2026-01-06T02:14:00Z'}
+                pagination: {total: 1, limit: 1}
+        '400':
+          description: The event filter names an event outside the vocabulary, or the cursor is malformed.
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Error'}
+              example: {error: unknown operations event, code: invalid_event}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '403': {$ref: '#/components/responses/Forbidden'}
         '503': {$ref: '#/components/responses/DependencyUnavailable'}
 
   /api/v1/search:
@@ -1034,6 +1184,102 @@ paths:
         '403': {$ref: '#/components/responses/ServiceForbidden'}
         '503': {$ref: '#/components/responses/DependencyUnavailable'}
 
+  /api/service/v1/servers:
+    post:
+      tags: [Service]
+      operationId: registerServer
+      summary: Register or update a server
+      description: |
+        Registers a server from its reporter, or updates one already
+        registered. Requires `operations.report`, which no human role holds: a
+        person does not assert that a host exists, a reporter does.
+
+        The Global ID is allocated by the platform and keyed by the reporter's
+        own identifier, so re-registering the same host returns the same
+        `SRV-*` rather than minting another. `client_id` and `project_id` are
+        verified to resolve before anything is stored — an operations record
+        attached to the wrong customer is worse than one attached to none.
+
+        **Status is not settable here.** It is a consequence of reported
+        events; letting a registration set it would let a reporter declare a
+        server healthy without saying anything happened.
+      security:
+        - serviceAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/ServerRequest'}
+            example: {source: bravo, source_id: host-9f2c, name: bsystem-app-1, environment: prod, client_id: CL-000001}
+      responses:
+        '200':
+          description: The registered server.
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Server'}
+        '400':
+          description: A required field is missing, the environment is unknown, or a relation does not resolve.
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Error'}
+              example: {error: client_id does not name a known client, code: invalid_relation}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '403': {$ref: '#/components/responses/ServiceForbidden'}
+        '503': {$ref: '#/components/responses/DependencyUnavailable'}
+
+  /api/service/v1/operations/events:
+    post:
+      tags: [Service]
+      operationId: reportOperationsEvent
+      summary: Report an operations event
+      description: |
+        Records one thing that happened to a server. Requires
+        `operations.report`.
+
+        The event vocabulary is closed. A name outside it is refused rather
+        than stored, because an operations feed that accepts anything becomes
+        a log, and nobody can write a query or a notification rule against a
+        log whose contents are unbounded.
+
+        `severity` is a floor: a reporter may escalate an event it knows is
+        worse than usual, but cannot lower one the platform treats as
+        critical.
+
+        Only `summary` is stored as text. A reporter's full payload can carry
+        credentials, addresses and command output, and this record is read by
+        everyone holding `operations.server.read`.
+
+        A report may move the server's status — see `docs/OPERATIONS.md` for
+        which do and why a failed backup does not.
+
+        The report becomes a platform event on `bsystem.events.<event>` and,
+        where people are interrupted by it, a notification. Both are best
+        effort: the report is already stored, and losing it to make a
+        secondary effect look atomic would be the worse trade.
+      security:
+        - serviceAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/OperationsEventRequest'}
+            example: {server_id: SRV-000001, event: backup.failed, summary: 'nightly backup exited 1', source: bravo}
+      responses:
+        '202':
+          description: The report was recorded.
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/OperationsEvent'}
+        '400':
+          description: The event is outside the vocabulary, or `server_id` names no registered server.
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Error'}
+              example: {error: unknown operations event, code: invalid_event}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '403': {$ref: '#/components/responses/ServiceForbidden'}
+        '503': {$ref: '#/components/responses/DependencyUnavailable'}
+
 components:
   securitySchemes:
     bearerAuth:
@@ -1181,6 +1427,107 @@ components:
             is exhausted.
       examples:
         - {total: 42, limit: 50, next_cursor: bzo1MA}
+
+    Server:
+      type: object
+      description: |
+        A normalized infrastructure host.
+
+        It carries no hostname, address or any other way to reach the machine.
+        The platform never connects to a server, and an inventory of reachable
+        addresses is internal topology that should not accumulate somewhere
+        more people can read than can log in. `name` is a label for humans;
+        identity is the Global ID.
+      required: [id, name, environment, status, source, source_id, created_at]
+      properties:
+        id: {type: string, pattern: '^SRV-[0-9]+$'}
+        name: {type: string}
+        environment: {type: string, enum: [dev, stage, prod, unknown]}
+        status:
+          type: string
+          enum: [ok, warning, error, maintenance, offline, unknown]
+          description: |
+            The last state a reported event implied. `unknown` until something
+            is reported that says whether the server is up.
+        client_id: {type: string, description: The owning customer, when the server has one.}
+        project_id: {type: string}
+        source: {type: string}
+        source_id: {type: string}
+        last_event_at:
+          type: string
+          format: date-time
+          description: |
+            When the server was last reported on at all. Absent until the
+            first report; a stale value is how an operator learns a reporter
+            has gone quiet.
+        created_at: {type: string, format: date-time}
+
+    ServerRequest:
+      type: object
+      required: [source, source_id, name]
+      properties:
+        source: {type: string}
+        source_id:
+          type: string
+          description: The reporter's own identifier, which keys the Global ID allocation.
+        name: {type: string}
+        environment:
+          type: string
+          enum: [dev, stage, prod, unknown]
+          default: unknown
+          description: |
+            Omitted means `unknown`. A reporter that does not say must not be
+            recorded as production, and must not be recorded as a lab either.
+        client_id: {type: string}
+        project_id: {type: string}
+
+    OperationsEventName:
+      type: string
+      enum:
+        - backup.succeeded
+        - backup.failed
+        - selftest.succeeded
+        - selftest.failed
+        - maintenance.started
+        - maintenance.completed
+        - server.ok
+        - server.warning
+        - server.error
+        - server.offline
+
+    OperationsEvent:
+      type: object
+      required: [id, server_id, event, severity, source, occurred_at]
+      properties:
+        id: {type: integer, format: int64}
+        server_id: {type: string, pattern: '^SRV-[0-9]+$'}
+        event: {$ref: '#/components/schemas/OperationsEventName'}
+        severity: {type: string, enum: [debug, info, warning, error, critical]}
+        summary:
+          type: string
+          description: |
+            A short human-readable line. The only free text stored, because
+            this record is read by everyone holding `operations.server.read`.
+        source: {type: string}
+        correlation_id: {type: string}
+        occurred_at: {type: string, format: date-time}
+
+    OperationsEventRequest:
+      type: object
+      required: [server_id, event, source]
+      properties:
+        server_id: {type: string, pattern: '^SRV-[0-9]+$'}
+        event: {$ref: '#/components/schemas/OperationsEventName'}
+        severity:
+          type: string
+          enum: [debug, info, warning, error, critical]
+          description: A floor, not a value. A reporter may escalate but not lower.
+        summary: {type: string}
+        occurred_at:
+          type: string
+          format: date-time
+          description: Defaults to the time the report was received.
+        source: {type: string}
 
     SearchCollection:
       type: object
@@ -1371,6 +1718,11 @@ components:
             `invalid_document` — a search document cannot be indexed as given.
             `search_unavailable` — the search provider could not be reached.
             This is never rendered as an empty result.
+            `invalid_event` — an operations event outside the platform's
+            vocabulary.
+            `invalid_environment` — an unrecognised deployment environment.
+            `invalid_relation` — a Global ID that does not resolve, or does
+            not name an entity of the expected type.
           enum:
             - upstream_unavailable
             - scope_required
@@ -1381,6 +1733,9 @@ components:
             - invalid_type
             - invalid_document
             - search_unavailable
+            - invalid_event
+            - invalid_environment
+            - invalid_relation
         source:
           type: string
           description: The adapter id of the failing upstream, when applicable.

@@ -65,7 +65,10 @@ var mappings = map[string]Mapping{
 	// former and not the latter, and a failed test run has to reach the
 	// people who run tests. The E2E suite caught this addressed to a
 	// permission only Managers hold.
-	"test.failed":      {Permission: "qa.testcase.read", Severity: "error", Title: "Test run failed"},
+	"test.failed":     {Permission: "qa.testcase.read", Severity: "error", Title: "Test run failed"},
+	"selftest.failed": {Permission: "operations.server.read", Severity: "error", Title: "Server self-test failed"},
+	"server.error":    {Permission: "operations.server.read", Severity: "error", Title: "Server reporting errors"},
+
 	"incident.created": {Permission: "support.incident.read", Severity: "error", Title: "Incident created"},
 	"release.created":  {Permission: "development.repo.read", Severity: "info", Title: "Release created"},
 }

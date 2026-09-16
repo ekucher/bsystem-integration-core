@@ -65,6 +65,9 @@ func routes() []route {
 		{Method: http.MethodGet, Path: "/api/v1/issues/{id}", Auth: authHuman, Permission: "projects.task.read", ResourceScope: authz.ScopeResource, Handler: func(a *app) http.HandlerFunc { return a.getIssue }},
 		{Method: http.MethodGet, Path: "/api/v1/documents", Auth: authHuman, Permission: "wiki.document.read", Handler: func(a *app) http.HandlerFunc { return a.listDocuments }},
 		{Method: http.MethodGet, Path: "/api/v1/documents/{id}", Auth: authHuman, Permission: "wiki.document.read", ResourceScope: authz.ScopeResource, Handler: func(a *app) http.HandlerFunc { return a.getDocument }},
+		{Method: http.MethodGet, Path: "/api/v1/servers", Auth: authHuman, Permission: "operations.server.read", Handler: func(a *app) http.HandlerFunc { return a.listServers }},
+		{Method: http.MethodGet, Path: "/api/v1/servers/{id}", Auth: authHuman, Permission: "operations.server.read", ResourceScope: authz.ScopeClient, Handler: func(a *app) http.HandlerFunc { return a.getServer }},
+		{Method: http.MethodGet, Path: "/api/v1/operations/events", Auth: authHuman, Permission: "operations.server.read", Handler: func(a *app) http.HandlerFunc { return a.listOperationsEvents }},
 		{Method: http.MethodPost, Path: "/api/v1/global-ids", Auth: authHuman, Permission: "*", Handler: func(a *app) http.HandlerFunc { return a.createGlobalID }},
 		{Method: http.MethodGet, Path: "/api/v1/global-ids/{id}", Auth: authHuman, Permission: "*", Handler: func(a *app) http.HandlerFunc { return a.resolveGlobalID }},
 		// Search carries no route permission: what a caller may see is decided
@@ -91,6 +94,8 @@ func routes() []route {
 		{Method: http.MethodGet, Path: "/api/service/v1/adapters/health", Auth: authService, Permission: "adapters.read", Handler: func(a *app) http.HandlerFunc { return a.serviceAdapterHealth }},
 		{Method: http.MethodPost, Path: "/api/service/v1/events", Auth: authService, Permission: "events.publish", Handler: func(a *app) http.HandlerFunc { return a.servicePublishEvent }},
 		{Method: http.MethodPost, Path: "/api/service/v1/notifications", Auth: authService, Permission: "notifications.publish", Handler: func(a *app) http.HandlerFunc { return a.servicePublishNotification }},
+		{Method: http.MethodPost, Path: "/api/service/v1/servers", Auth: authService, Permission: "operations.report", Handler: func(a *app) http.HandlerFunc { return a.serviceRegisterServer }},
+		{Method: http.MethodPost, Path: "/api/service/v1/operations/events", Auth: authService, Permission: "operations.report", Handler: func(a *app) http.HandlerFunc { return a.serviceReportOperationsEvent }},
 		{Method: http.MethodPost, Path: "/api/service/v1/search/documents", Auth: authService, Permission: "search.index", Handler: func(a *app) http.HandlerFunc { return a.serviceIndexSearchDocuments }},
 		{Method: http.MethodDelete, Path: "/api/service/v1/search/documents/{id}", Auth: authService, Permission: "search.index", Handler: func(a *app) http.HandlerFunc { return a.serviceDeleteSearchDocument }},
 	}
