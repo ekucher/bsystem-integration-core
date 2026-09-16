@@ -6,7 +6,11 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"os"
+	"runtime"
 	"sort"
+	"strconv"
+	"strings"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -63,7 +67,13 @@ func Open(ctx context.Context, databaseURL string) (*DB, error) {
 	if databaseURL == "" {
 		return nil, errors.New("DATABASE_URL is required")
 	}
-	pool, err := pgxpool.New(ctx, databaseURL)
+	config, err := pgxpool.ParseConfig(databaseURL)
+	if err != nil {
+		return nil, fmt.Errorf("parse database URL: %w", err)
+	}
+	applyPoolLimits(config)
+
+	pool, err := pgxpool.NewWithConfig(ctx, config)
 	if err != nil {
 		return nil, fmt.Errorf("open database: %w", err)
 	}
@@ -262,4 +272,135 @@ func (db *DB) Stats() PoolStats {
 		EmptyAcquireCount: stat.EmptyAcquireCount(),
 		CanceledAcquire:   stat.CanceledAcquireCount(),
 	}
+}
+
+// Pool defaults.
+//
+// pgx sizes a pool at max(4, NumCPU), which is a reasonable guess about the
+// client and no guess at all about the server. PostgreSQL's own max_connections
+// is the real limit, and it is shared with every other client — so a platform
+// that sizes its pool by its own core count will, on a larger machine, quietly
+// take a share it was never allocated and fail everyone at once when it runs
+// out.
+//
+// These are bounds rather than targets: the pool opens what it needs.
+const (
+	defaultMaxConns = 20
+	defaultMinConns = 2
+	// A connection that has been idle this long is closed, so a quiet night
+	// does not hold connections a neighbouring service needs.
+	defaultMaxConnIdleTime = 5 * time.Minute
+	// Connections are recycled regardless of use. This is what stops a
+	// long-lived pool from pinning a connection to a database instance that
+	// has since been replaced behind a load balancer.
+	defaultMaxConnLifetime = 30 * time.Minute
+	// A caller waiting for a connection is already in trouble. Bounding the
+	// wait turns pool exhaustion into a fast error that says so, rather than
+	// a queue that looks like the database is slow.
+	defaultConnectTimeout = 5 * time.Second
+)
+
+// applyPoolLimits sets the pool bounds, letting the connection string override
+// any of them: a deployment knows its own PostgreSQL better than this does.
+func applyPoolLimits(config *pgxpool.Config) {
+	if config.MaxConns <= 0 || config.MaxConns == int32(max(4, runtime.NumCPU())) {
+		config.MaxConns = intFromEnv("DATABASE_MAX_CONNS", defaultMaxConns)
+	}
+	if config.MinConns <= 0 {
+		config.MinConns = intFromEnv("DATABASE_MIN_CONNS", defaultMinConns)
+	}
+	if config.MaxConnIdleTime <= 0 {
+		config.MaxConnIdleTime = defaultMaxConnIdleTime
+	}
+	if config.MaxConnLifetime <= 0 {
+		config.MaxConnLifetime = defaultMaxConnLifetime
+	}
+	if config.ConnConfig.ConnectTimeout <= 0 {
+		config.ConnConfig.ConnectTimeout = defaultConnectTimeout
+	}
+}
+
+func intFromEnv(name string, fallback int32) int32 {
+	value, err := strconv.Atoi(strings.TrimSpace(os.Getenv(name)))
+	if err != nil || value <= 0 {
+		return fallback
+	}
+	return int32(value)
+}
+
+// GlobalIDRequest is one record to map in a batch.
+type GlobalIDRequest struct {
+	EntityType string
+	Source     string
+	SourceID   string
+	TenantID   string
+	Metadata   map[string]any
+}
+
+// MapGlobalIDs resolves a page of upstream records to Global IDs in bounded
+// work, returning `source_id` to Global ID for the entity type requested.
+//
+// The listing handlers used to call CreateGlobalEntity once per item, which
+// is a transaction — and for contacts and issues, two transactions — for
+// every row on the page. A page of fifty contacts cost a hundred round trips
+// to render fifty lines, and the cost grew with the page rather than with the
+// work.
+//
+// This does one SELECT for everything already mapped, which is the normal
+// case after the first sighting of a collection, and then allocates only what
+// is genuinely new. The allocation still goes through CreateGlobalEntity, so
+// there is exactly one place where an identifier comes into existence.
+func (db *DB) MapGlobalIDs(ctx context.Context, entityType, source string, requests []GlobalIDRequest) (map[string]string, error) {
+	mapped := make(map[string]string, len(requests))
+	if len(requests) == 0 {
+		return mapped, nil
+	}
+
+	sourceIDs := make([]string, 0, len(requests))
+	seen := make(map[string]bool, len(requests))
+	for _, request := range requests {
+		if request.SourceID == "" || seen[request.SourceID] {
+			continue
+		}
+		seen[request.SourceID] = true
+		sourceIDs = append(sourceIDs, request.SourceID)
+	}
+
+	rows, err := db.pool.Query(ctx, `
+SELECT source_id, global_id FROM global_entities
+WHERE source = $1 AND entity_type = $2 AND source_id = ANY($3)`,
+		source, entityType, sourceIDs)
+	if err != nil {
+		return nil, err
+	}
+	for rows.Next() {
+		var sourceID, globalID string
+		if err := rows.Scan(&sourceID, &globalID); err != nil {
+			rows.Close()
+			return nil, err
+		}
+		mapped[sourceID] = globalID
+	}
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+
+	// Anything still unmapped is being seen for the first time. This is the
+	// slow path by construction: it runs once per record in the platform's
+	// lifetime, not once per request.
+	for _, request := range requests {
+		if request.SourceID == "" {
+			continue
+		}
+		if _, already := mapped[request.SourceID]; already {
+			continue
+		}
+		entity, err := db.CreateGlobalEntity(ctx, entityType, source, request.SourceID, request.TenantID, request.Metadata)
+		if err != nil {
+			return nil, err
+		}
+		mapped[request.SourceID] = entity.GlobalID
+	}
+	return mapped, nil
 }

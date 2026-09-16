@@ -145,14 +145,22 @@ func adapterFor[T any](w http.ResponseWriter, id, name string) (T, bool) {
 // mapGlobalID allocates or returns the Global ID for one upstream record.
 // A mapping failure is fatal to the request: returning the record without its
 // platform identity would hand the caller an unaddressable entity.
-func (a *app) mapGlobalID(w http.ResponseWriter, r *http.Request, entityType, source, sourceID string, metadata map[string]any) (string, bool) {
-	entity, err := a.db.CreateGlobalEntity(r.Context(), entityType, source, sourceID, "", metadata)
+// mapGlobalIDs resolves a whole page of upstream records to Global IDs in
+// bounded work, rather than one database transaction per row.
+//
+// The per-item version this replaces cost a transaction for every line
+// rendered — two for contacts and issues, which also map their owner — so the
+// price of a listing grew with the page rather than with the work. It reports
+// whether the caller may proceed, having already written the failure when
+// they may not.
+func (a *app) mapGlobalIDs(w http.ResponseWriter, r *http.Request, entityType, source string, requests []platformdb.GlobalIDRequest) (map[string]string, bool) {
+	mapped, err := a.db.MapGlobalIDs(r.Context(), entityType, source, requests)
 	if err != nil {
 		logger.ErrorContext(r.Context(), "Global ID mapping failed", "source", source, "entity_type", entityType, "error", err.Error())
 		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "Global ID mapping failed"})
-		return "", false
+		return nil, false
 	}
-	return entity.GlobalID, true
+	return mapped, true
 }
 
 func (a *app) listClients(w http.ResponseWriter, r *http.Request) {
@@ -169,13 +177,20 @@ func (a *app) listClients(w http.ResponseWriter, r *http.Request) {
 		upstreamFailure(w, "espocrm", err)
 		return
 	}
+	requests := make([]platformdb.GlobalIDRequest, 0, len(accounts))
+	for _, item := range accounts {
+		requests = append(requests, platformdb.GlobalIDRequest{
+			EntityType: "client", Source: "espocrm", SourceID: item.ID,
+			Metadata: map[string]any{"name": item.Name},
+		})
+	}
+	ids, ok := a.mapGlobalIDs(w, r, "client", "espocrm", requests)
+	if !ok {
+		return
+	}
 	result := make([]clientView, 0, len(accounts))
 	for _, item := range accounts {
-		globalID, ok := a.mapGlobalID(w, r, "client", "espocrm", item.ID, map[string]any{"name": item.Name})
-		if !ok {
-			return
-		}
-		result = append(result, clientView{ID: globalID, Source: "espocrm", SourceID: item.ID, Name: item.Name, Website: item.Website, Email: item.Email, Phone: item.Phone})
+		result = append(result, clientView{ID: ids[item.ID], Source: "espocrm", SourceID: item.ID, Name: item.Name, Website: item.Website, Email: item.Email, Phone: item.Phone})
 	}
 	writeCollection(w, result, info)
 }
@@ -194,21 +209,34 @@ func (a *app) listContacts(w http.ResponseWriter, r *http.Request) {
 		upstreamFailure(w, "espocrm", err)
 		return
 	}
+	contactRequests := make([]platformdb.GlobalIDRequest, 0, len(contacts))
+	ownerRequests := make([]platformdb.GlobalIDRequest, 0, len(contacts))
+	for _, item := range contacts {
+		contactRequests = append(contactRequests, platformdb.GlobalIDRequest{
+			EntityType: "contact", Source: "espocrm", SourceID: item.ID,
+			Metadata: map[string]any{"name": item.Name},
+		})
+		if item.AccountID != "" {
+			ownerRequests = append(ownerRequests, platformdb.GlobalIDRequest{
+				EntityType: "client", Source: "espocrm", SourceID: item.AccountID,
+			})
+		}
+	}
+	ids, ok := a.mapGlobalIDs(w, r, "contact", "espocrm", contactRequests)
+	if !ok {
+		return
+	}
+	// The owning client is mapped here because the contact listing is where
+	// that relationship first becomes known to the platform. Doing it as a
+	// second batch rather than per contact means a page of fifty contacts
+	// belonging to three clients costs two queries, not a hundred.
+	owners, ok := a.mapGlobalIDs(w, r, "client", "espocrm", ownerRequests)
+	if !ok {
+		return
+	}
 	result := make([]contactView, 0, len(contacts))
 	for _, item := range contacts {
-		globalID, ok := a.mapGlobalID(w, r, "contact", "espocrm", item.ID, map[string]any{"name": item.Name})
-		if !ok {
-			return
-		}
-		// The owning client is mapped here because the contact listing is
-		// where that relationship first becomes known to the platform.
-		clientID := ""
-		if item.AccountID != "" {
-			if mapped, mapErr := a.db.CreateGlobalEntity(r.Context(), "client", "espocrm", item.AccountID, "", nil); mapErr == nil {
-				clientID = mapped.GlobalID
-			}
-		}
-		result = append(result, contactView{ID: globalID, Source: "espocrm", SourceID: item.ID, Name: item.Name, ClientID: clientID, Email: item.Email, Phone: item.Phone})
+		result = append(result, contactView{ID: ids[item.ID], Source: "espocrm", SourceID: item.ID, Name: item.Name, ClientID: owners[item.AccountID], Email: item.Email, Phone: item.Phone})
 	}
 	writeCollection(w, result, info)
 }
@@ -227,14 +255,21 @@ func (a *app) listProjects(w http.ResponseWriter, r *http.Request) {
 		upstreamFailure(w, "redmine", err)
 		return
 	}
+	requests := make([]platformdb.GlobalIDRequest, 0, len(projects))
+	for _, item := range projects {
+		requests = append(requests, platformdb.GlobalIDRequest{
+			EntityType: "project", Source: "redmine", SourceID: strconv.Itoa(item.ID),
+			Metadata: map[string]any{"identifier": item.Identifier, "name": item.Name},
+		})
+	}
+	ids, ok := a.mapGlobalIDs(w, r, "project", "redmine", requests)
+	if !ok {
+		return
+	}
 	result := make([]projectView, 0, len(projects))
 	for _, item := range projects {
 		sourceID := strconv.Itoa(item.ID)
-		globalID, ok := a.mapGlobalID(w, r, "project", "redmine", sourceID, map[string]any{"identifier": item.Identifier, "name": item.Name})
-		if !ok {
-			return
-		}
-		result = append(result, projectView{ID: globalID, Source: "redmine", SourceID: sourceID, Name: item.Name, Identifier: item.Identifier, Description: item.Description})
+		result = append(result, projectView{ID: ids[sourceID], Source: "redmine", SourceID: sourceID, Name: item.Name, Identifier: item.Identifier, Description: item.Description})
 	}
 	writeCollection(w, result, info)
 }
@@ -254,20 +289,36 @@ func (a *app) listIssues(w http.ResponseWriter, r *http.Request) {
 		upstreamFailure(w, "redmine", err)
 		return
 	}
+	issueRequests := make([]platformdb.GlobalIDRequest, 0, len(issues))
+	projectRequests := make([]platformdb.GlobalIDRequest, 0, len(issues))
+	for _, item := range issues {
+		issueRequests = append(issueRequests, platformdb.GlobalIDRequest{
+			EntityType: "task", Source: "redmine", SourceID: strconv.Itoa(item.ID),
+			Metadata: map[string]any{"subject": item.Subject},
+		})
+		if item.Project.ID > 0 {
+			projectRequests = append(projectRequests, platformdb.GlobalIDRequest{
+				EntityType: "project", Source: "redmine", SourceID: strconv.Itoa(item.Project.ID),
+				Metadata: map[string]any{"name": item.Project.Name},
+			})
+		}
+	}
+	ids, ok := a.mapGlobalIDs(w, r, "task", "redmine", issueRequests)
+	if !ok {
+		return
+	}
+	projects, ok := a.mapGlobalIDs(w, r, "project", "redmine", projectRequests)
+	if !ok {
+		return
+	}
 	result := make([]issueView, 0, len(issues))
 	for _, item := range issues {
 		sourceID := strconv.Itoa(item.ID)
-		globalID, ok := a.mapGlobalID(w, r, "task", "redmine", sourceID, map[string]any{"subject": item.Subject})
-		if !ok {
-			return
-		}
 		projectID := ""
 		if item.Project.ID > 0 {
-			if mapped, mapErr := a.db.CreateGlobalEntity(r.Context(), "project", "redmine", strconv.Itoa(item.Project.ID), "", map[string]any{"name": item.Project.Name}); mapErr == nil {
-				projectID = mapped.GlobalID
-			}
+			projectID = projects[strconv.Itoa(item.Project.ID)]
 		}
-		result = append(result, issueView{ID: globalID, Source: "redmine", SourceID: sourceID, Subject: item.Subject, ProjectID: projectID, Status: item.Status.Name})
+		result = append(result, issueView{ID: ids[sourceID], Source: "redmine", SourceID: sourceID, Subject: item.Subject, ProjectID: projectID, Status: item.Status.Name})
 	}
 	writeCollection(w, result, info)
 }
@@ -286,13 +337,20 @@ func (a *app) listDocuments(w http.ResponseWriter, r *http.Request) {
 		upstreamFailure(w, "outline", err)
 		return
 	}
+	requests := make([]platformdb.GlobalIDRequest, 0, len(documents))
+	for _, item := range documents {
+		requests = append(requests, platformdb.GlobalIDRequest{
+			EntityType: "document", Source: "outline", SourceID: item.ID,
+			Metadata: map[string]any{"title": item.Title, "collection_id": item.CollectionID},
+		})
+	}
+	ids, ok := a.mapGlobalIDs(w, r, "document", "outline", requests)
+	if !ok {
+		return
+	}
 	result := make([]documentView, 0, len(documents))
 	for _, item := range documents {
-		globalID, ok := a.mapGlobalID(w, r, "document", "outline", item.ID, map[string]any{"title": item.Title, "collection_id": item.CollectionID})
-		if !ok {
-			return
-		}
-		result = append(result, documentView{ID: globalID, Source: "outline", SourceID: item.ID, Title: item.Title, URL: item.URL, CollectionID: item.CollectionID, UpdatedAt: item.UpdatedAt})
+		result = append(result, documentView{ID: ids[item.ID], Source: "outline", SourceID: item.ID, Title: item.Title, URL: item.URL, CollectionID: item.CollectionID, UpdatedAt: item.UpdatedAt})
 	}
 	writeCollection(w, result, info)
 }

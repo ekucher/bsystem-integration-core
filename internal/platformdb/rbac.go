@@ -133,35 +133,62 @@ ORDER BY kind,name`)
 		return nil, err
 	}
 
-	for i := range roles {
-		permRows, err := db.pool.Query(ctx, `SELECT permission_id FROM role_permissions WHERE role_id=$1 ORDER BY permission_id`, roles[i].ID)
-		if err != nil {
-			return nil, err
-		}
-		for permRows.Next() {
-			var id string
-			if err := permRows.Scan(&id); err != nil {
-				permRows.Close()
-				return nil, err
-			}
-			roles[i].Permissions = append(roles[i].Permissions, id)
-		}
-		permRows.Close()
-
-		moduleRows, err := db.pool.Query(ctx, `SELECT module_id FROM role_modules WHERE role_id=$1 ORDER BY module_id`, roles[i].ID)
-		if err != nil {
-			return nil, err
-		}
-		for moduleRows.Next() {
-			var id string
-			if err := moduleRows.Scan(&id); err != nil {
-				moduleRows.Close()
-				return nil, err
-			}
-			roles[i].Modules = append(roles[i].Modules, id)
-		}
-		moduleRows.Close()
+	if len(roles) == 0 {
+		return roles, nil
 	}
+
+	// Permissions and modules are fetched for every role at once rather than
+	// per role. The loop this replaces issued two queries per role, so the
+	// cost of listing the roles grew with the number of roles — which is
+	// exactly the shape that looks fine with eight of them and does not stay
+	// fine.
+	byID := make(map[string]*RoleView, len(roles))
+	ids := make([]string, 0, len(roles))
+	for i := range roles {
+		byID[roles[i].ID] = &roles[i]
+		ids = append(ids, roles[i].ID)
+	}
+
+	permRows, err := db.pool.Query(ctx,
+		`SELECT role_id, permission_id FROM role_permissions WHERE role_id = ANY($1) ORDER BY role_id, permission_id`, ids)
+	if err != nil {
+		return nil, err
+	}
+	for permRows.Next() {
+		var roleID, permission string
+		if err := permRows.Scan(&roleID, &permission); err != nil {
+			permRows.Close()
+			return nil, err
+		}
+		if role := byID[roleID]; role != nil {
+			role.Permissions = append(role.Permissions, permission)
+		}
+	}
+	permRows.Close()
+	if err := permRows.Err(); err != nil {
+		return nil, err
+	}
+
+	moduleRows, err := db.pool.Query(ctx,
+		`SELECT role_id, module_id FROM role_modules WHERE role_id = ANY($1) ORDER BY role_id, module_id`, ids)
+	if err != nil {
+		return nil, err
+	}
+	for moduleRows.Next() {
+		var roleID, module string
+		if err := moduleRows.Scan(&roleID, &module); err != nil {
+			moduleRows.Close()
+			return nil, err
+		}
+		if role := byID[roleID]; role != nil {
+			role.Modules = append(role.Modules, module)
+		}
+	}
+	moduleRows.Close()
+	if err := moduleRows.Err(); err != nil {
+		return nil, err
+	}
+
 	return roles, nil
 }
 

@@ -8,8 +8,10 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"os/signal"
 	"strconv"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/ekucher/bsystem-integration-core/internal/ai"
@@ -436,7 +438,66 @@ func main() {
 	if addr == "" {
 		addr = ":8080"
 	}
-	server := &http.Server{Addr: addr, Handler: a.handler(), ReadHeaderTimeout: 5 * time.Second, ReadTimeout: 15 * time.Second, WriteTimeout: 15 * time.Second, IdleTimeout: 60 * time.Second}
-	logger.Info("bsystem-integration-core listening", "version", "0.5.0", "addr", addr)
-	log.Fatal(server.ListenAndServe())
+	// WriteTimeout must exceed the longest a handler can legitimately take,
+	// or the server cuts a response the handler is still producing — and the
+	// caller sees a truncated body rather than the timeout that caused it.
+	// The AI gateway is the longest, so the bound is derived from it rather
+	// than written as a constant somebody has to remember to keep in step.
+	writeTimeout := durationEnv("HTTP_WRITE_TIMEOUT", 60*time.Second)
+	if minimum := aiTimeout() + 10*time.Second; writeTimeout < minimum {
+		logger.Warn("raising the write timeout above the AI provider bound",
+			"configured", writeTimeout.String(), "using", minimum.String())
+		writeTimeout = minimum
+	}
+
+	server := &http.Server{
+		Addr:    addr,
+		Handler: a.handler(),
+		// ReadHeaderTimeout is the one that matters for a slowloris: it
+		// bounds how long a connection may spend sending nothing useful.
+		ReadHeaderTimeout: durationEnv("HTTP_READ_HEADER_TIMEOUT", 5*time.Second),
+		ReadTimeout:       durationEnv("HTTP_READ_TIMEOUT", 15*time.Second),
+		WriteTimeout:      writeTimeout,
+		IdleTimeout:       durationEnv("HTTP_IDLE_TIMEOUT", 60*time.Second),
+	}
+
+	// Shut down on SIGTERM rather than dying on it.
+	//
+	// A container runtime sends SIGTERM and then waits before SIGKILL. A
+	// process that exits immediately drops every request in flight, which
+	// during a rolling deploy means a burst of failures for users who did
+	// nothing but arrive at the wrong moment — and which looks like an
+	// intermittent platform fault rather than a deployment.
+	shutdown := make(chan os.Signal, 1)
+	signal.Notify(shutdown, syscall.SIGINT, syscall.SIGTERM)
+
+	serverErrors := make(chan error, 1)
+	go func() {
+		logger.Info("bsystem-integration-core listening", "version", "0.6.0", "addr", addr,
+			"write_timeout", writeTimeout.String())
+		serverErrors <- server.ListenAndServe()
+	}()
+
+	select {
+	case err := <-serverErrors:
+		if err != nil && !errors.Is(err, http.ErrServerClosed) {
+			log.Fatalf("server failed: %v", err)
+		}
+	case sig := <-shutdown:
+		logger.Info("shutting down", "signal", sig.String())
+		// The grace period must be shorter than the runtime's own kill
+		// delay, or the runtime wins the race and the graceful path never
+		// completes. Ten seconds is comfortably inside Docker's default
+		// thirty and Kubernetes' default thirty.
+		ctx, cancel := context.WithTimeout(context.Background(), durationEnv("HTTP_SHUTDOWN_GRACE", 10*time.Second))
+		defer cancel()
+		if err := server.Shutdown(ctx); err != nil {
+			// A request that outlived the grace period is closed. Saying so
+			// is the point: a silent close looks like a network fault to
+			// whoever was holding the connection.
+			logger.Warn("shutdown deadline reached with requests still in flight", "error", err.Error())
+			_ = server.Close()
+		}
+		logger.Info("stopped")
+	}
 }
