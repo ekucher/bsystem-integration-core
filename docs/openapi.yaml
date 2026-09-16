@@ -45,6 +45,10 @@ tags:
     description: Normalized entities sourced from the authoritative systems.
   - name: Global IDs
     description: Immutable platform identifiers for upstream records.
+  - name: Support
+    description: |
+      Incidents and requests, their lifecycle, and the SLA state derived from
+      whatever targets the business has configured.
   - name: Infrastructure
     description: |
       Servers the platform mirrors but does not own, and what is reported
@@ -538,6 +542,201 @@ paths:
         '401': {$ref: '#/components/responses/Unauthorized'}
         '403': {$ref: '#/components/responses/Forbidden'}
         '404': {$ref: '#/components/responses/NotFound'}
+        '503': {$ref: '#/components/responses/DependencyUnavailable'}
+
+  /api/v1/incidents:
+    get:
+      tags: [Support]
+      operationId: listIncidents
+      summary: List incidents and requests
+      description: |
+        Requires `support.incident.read` across the platform. A principal
+        granted it only inside one scope — a customer with a grant on their
+        own client — is refused here and can still read its own records
+        individually.
+
+        Relations are not loaded for a listing. A list is read to find a
+        record, and fetching every relation for every row would make the
+        common case pay for the uncommon one.
+
+        Every filter value is validated rather than passed through: an unknown
+        one would match nothing, and "no results" is indistinguishable from
+        "none exist" to whoever is reading.
+      parameters:
+        - name: kind
+          in: query
+          required: false
+          schema: {type: string, enum: [incident, request]}
+        - name: status
+          in: query
+          required: false
+          schema: {$ref: '#/components/schemas/SupportStatus'}
+        - name: severity
+          in: query
+          required: false
+          schema: {$ref: '#/components/schemas/SupportSeverity'}
+        - name: client_id
+          in: query
+          required: false
+          schema: {type: string, pattern: '^CL-[0-9]+$'}
+        - name: open
+          in: query
+          required: false
+          description: When `true`, restricts to records that are neither resolved nor closed.
+          schema: {type: boolean, default: false}
+        - name: limit
+          in: query
+          required: false
+          schema: {type: integer, minimum: 1, maximum: 100, default: 25}
+        - name: cursor
+          in: query
+          required: false
+          description: The last Global ID from the previous page.
+          schema: {type: string}
+      responses:
+        '200':
+          description: Support records.
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - {$ref: '#/components/schemas/Collection'}
+                  - type: object
+                    properties:
+                      data:
+                        type: array
+                        items: {$ref: '#/components/schemas/SupportRecord'}
+        '400':
+          description: A filter names a value outside its vocabulary.
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Error'}
+              example: {error: unknown severity, code: invalid_severity}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '503': {$ref: '#/components/responses/DependencyUnavailable'}
+
+    post:
+      tags: [Support]
+      operationId: createIncident
+      summary: Raise an incident or request
+      description: |
+        Requires `support.incident.write`. The record is created as `new` and
+        reported by the calling identity.
+
+        **`severity` is required and has no default.** An unstated severity is
+        a question nobody has answered, and answering it here would pick the
+        response time on the reporter's behalf.
+
+        `client_id` and every relation are verified to resolve before anything
+        is stored. A relation to something the platform cannot identify is a
+        dangling pointer that reads as a fact.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/SupportRequest'}
+            example:
+              kind: incident
+              title: Nightly backup has not run for two days
+              summary: 'Reported by the customer; the job exits immediately.'
+              severity: high
+              client_id: CL-000001
+              relations:
+                - {entity_type: server, global_id: SRV-000001}
+      responses:
+        '201':
+          description: The record was created.
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/SupportRecord'}
+        '400':
+          description: A required field is missing, or a value or relation does not resolve.
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Error'}
+              example: {error: severity must be one of low, medium, high, critical, code: invalid_severity}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '503': {$ref: '#/components/responses/DependencyUnavailable'}
+
+  /api/v1/incidents/{id}:
+    get:
+      tags: [Support]
+      operationId: getIncident
+      summary: Read one incident or request
+      description: |
+        Requires `support.incident.read` for this record. A record naming a
+        customer is evaluated against that client, which is where a grant is
+        written; one with no customer is evaluated against itself.
+
+        A record the caller may not read and one that does not exist are
+        answered identically, and the refusal happens before the lookup for
+        anyone who cannot hold the permission at all.
+      parameters:
+        - {$ref: '#/components/parameters/GlobalID'}
+      responses:
+        '200':
+          description: The record, with its relations and derived SLA state.
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/SupportRecord'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '503': {$ref: '#/components/responses/DependencyUnavailable'}
+
+    patch:
+      tags: [Support]
+      operationId: updateIncident
+      summary: Update an incident or request
+      description: |
+        Requires `support.incident.write` for this record. Only the fields
+        present in the body are changed; an omitted field is untouched.
+
+        A status change must follow the lifecycle. `closed` is terminal —
+        reopening it would silently rewrite whatever has already been reported
+        from it — while `resolved` may return to `in_progress`, because a fix
+        that did not hold is the same incident and opening a second record
+        loses the history of the first. A refused move is a `409` naming both
+        ends, since a caller needs to know which move was refused rather than
+        being told the value was wrong when it was not.
+
+        `acknowledged_at` and `resolved_at` are recorded the first time the
+        status reaches them and never moved again, so reopening does not erase
+        that the record was once resolved on time.
+
+        Reaching `resolved` publishes `incident.resolved`; any other change
+        publishes `incident.updated`.
+      parameters:
+        - {$ref: '#/components/parameters/GlobalID'}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/SupportUpdateRequest'}
+            example: {status: in_progress}
+      responses:
+        '200':
+          description: The updated record.
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/SupportRecord'}
+        '400':
+          description: A value is outside its vocabulary, or a relation does not resolve.
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Error'}
+              example: {error: unknown status, code: invalid_status}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '409':
+          description: The status change is not a move the lifecycle allows.
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Error'}
+              example: {error: closed cannot become in_progress, code: invalid_transition}
         '503': {$ref: '#/components/responses/DependencyUnavailable'}
 
   /api/v1/servers:
@@ -1428,6 +1627,114 @@ components:
       examples:
         - {total: 42, limit: 50, next_cursor: bzo1MA}
 
+    SupportStatus:
+      type: string
+      enum: [new, acknowledged, in_progress, resolved, closed]
+
+    SupportSeverity:
+      type: string
+      enum: [low, medium, high, critical]
+      description: |
+        Deliberately not the platform's event severity scale. An event
+        severity describes what happened; an incident severity is a statement
+        about how quickly somebody will respond, which is what an SLA is keyed
+        on.
+
+    SupportRelation:
+      type: object
+      required: [entity_type, global_id]
+      properties:
+        entity_type:
+          type: string
+          enum: [client, server, project, task, bug, document]
+        global_id: {type: string}
+
+    SupportSLA:
+      type: object
+      description: |
+        The record's state against its SLA target, computed on read because it
+        is a function of the clock — a stored value would be wrong from the
+        moment it was written.
+      required: [state]
+      properties:
+        state:
+          type: string
+          enum: [unset, on_track, at_risk, breached, met]
+          description: |
+            `unset` means no SLA target is configured for this severity, so
+            the platform makes no claim about when anything is due. It is
+            distinct from `on_track` on purpose: a customer reading "on track"
+            has been told a promise is being kept, and there is no promise.
+
+            A resolved record's state stops moving, so a report written later
+            does not show every closed incident as breached.
+        respond_by:
+          type: string
+          format: date-time
+          description: Absent when no target is configured.
+        resolve_by:
+          type: string
+          format: date-time
+          description: Absent when no target is configured.
+
+    SupportRecord:
+      type: object
+      required: [id, kind, title, severity, status, reported_by, created_at, updated_at, relations, sla]
+      properties:
+        id: {type: string, pattern: '^INC-[0-9]+$'}
+        kind: {type: string, enum: [incident, request]}
+        title: {type: string}
+        summary: {type: string}
+        severity: {$ref: '#/components/schemas/SupportSeverity'}
+        status: {$ref: '#/components/schemas/SupportStatus'}
+        client_id:
+          type: string
+          description: |
+            The affected customer. This is what a scope grant is written
+            against, so a customer can see their own records and no others.
+        relations:
+          type: array
+          items: {$ref: '#/components/schemas/SupportRelation'}
+          description: Empty in a listing; populated on a detail read.
+        reported_by: {type: string, pattern: '^USR-[0-9]+$'}
+        created_at: {type: string, format: date-time}
+        updated_at: {type: string, format: date-time}
+        acknowledged_at:
+          type: string
+          format: date-time
+          description: Recorded the first time the status left `new`, and never moved again.
+        resolved_at:
+          type: string
+          format: date-time
+          description: Recorded the first time the record was resolved or closed, and never moved again.
+        sla: {$ref: '#/components/schemas/SupportSLA'}
+
+    SupportRequest:
+      type: object
+      required: [title, severity]
+      properties:
+        kind: {type: string, enum: [incident, request], default: incident}
+        title: {type: string}
+        summary: {type: string}
+        severity: {$ref: '#/components/schemas/SupportSeverity'}
+        client_id: {type: string}
+        relations:
+          type: array
+          items: {$ref: '#/components/schemas/SupportRelation'}
+
+    SupportUpdateRequest:
+      type: object
+      description: Only the fields present are changed.
+      properties:
+        title: {type: string}
+        summary: {type: string}
+        severity: {$ref: '#/components/schemas/SupportSeverity'}
+        status: {$ref: '#/components/schemas/SupportStatus'}
+        relations:
+          type: array
+          items: {$ref: '#/components/schemas/SupportRelation'}
+          description: Replaces the whole set when present.
+
     Server:
       type: object
       description: |
@@ -1723,6 +2030,10 @@ components:
             `invalid_environment` — an unrecognised deployment environment.
             `invalid_relation` — a Global ID that does not resolve, or does
             not name an entity of the expected type.
+            `invalid_kind`, `invalid_severity`, `invalid_status` — a support
+            value outside its vocabulary.
+            `invalid_transition` — a status change the support lifecycle does
+            not allow.
           enum:
             - upstream_unavailable
             - scope_required
@@ -1736,6 +2047,10 @@ components:
             - invalid_event
             - invalid_environment
             - invalid_relation
+            - invalid_kind
+            - invalid_severity
+            - invalid_status
+            - invalid_transition
         source:
           type: string
           description: The adapter id of the failing upstream, when applicable.

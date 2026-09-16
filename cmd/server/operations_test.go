@@ -118,3 +118,38 @@ func TestTheServerDetailEndpointRefusesBeforeItLooksAnythingUp(t *testing.T) {
 		t.Error("getServer looks the server up before refusing, so a refused caller can tell an existing server from a missing one")
 	}
 }
+
+// assertRefusesBeforeLookup checks that a handler authorizes before it reads.
+//
+// Reading the source is an unusual shape for a test and it is the shape this
+// class of bug needs: a handler that looks up first and refuses after returns
+// exactly the same thing to a properly authorized caller, so no
+// response-level test can tell the two orderings apart. The difference is
+// only visible to a caller who is refused, and what they see is whether the
+// record existed.
+func assertRefusesBeforeLookup(t *testing.T, file, handler, lookup string) {
+	t.Helper()
+	source, err := os.ReadFile(file)
+	if err != nil {
+		t.Fatalf("read %s: %v", file, err)
+	}
+	body := string(source)
+	start := strings.Index(body, handler)
+	if start < 0 {
+		t.Fatalf("%s is not in %s any more; this test needs updating", handler, file)
+	}
+	rest := body[start:]
+	if end := strings.Index(rest[1:], "\nfunc "); end >= 0 {
+		rest = rest[:end+1]
+	}
+	authorize := strings.Index(rest, "authorizeResource")
+	read := strings.Index(rest, lookup)
+	switch {
+	case authorize < 0:
+		t.Fatalf("%s no longer refuses a caller who cannot hold the permission anywhere", handler)
+	case read < 0:
+		t.Fatalf("%s no longer calls %s; this test needs updating", handler, lookup)
+	case authorize > read:
+		t.Errorf("%s reads before refusing, so a refused caller can tell an existing record from a missing one", handler)
+	}
+}
