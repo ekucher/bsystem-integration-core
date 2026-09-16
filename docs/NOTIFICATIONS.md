@@ -68,9 +68,16 @@ on everything would train people to ignore it.
 | `backup.failed` | `operations.server.read` | critical |
 | `server.offline` | `operations.server.read` | critical |
 | `build.failed` | `development.repo.read` | error |
-| `test.failed` | `qa.report.read` | error |
+| `test.failed` | `qa.testcase.read` | error |
 | `incident.created` | `support.incident.read` | error |
 | `release.created` | `development.repo.read` | info |
+
+An audience must be a permission some unconfined role actually holds, not
+merely one RBAC defines. `test.failed` was first addressed to `qa.report.read`,
+which exists but which only the Manager role holds — the notification would
+never have reached the QA team, and nothing would have failed. It would simply
+have been invisible to the people it was for. A unit test now asserts that
+every audience has a holder, and names the events each role is interrupted by.
 
 Severity is a floor, not a value: a publisher may escalate an event it knows is
 worse than usual, but cannot quietly downgrade one the platform considers

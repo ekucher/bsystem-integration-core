@@ -21,7 +21,7 @@ func TestMappedEventsCarryTheirAudienceAndSeverity(t *testing.T) {
 		{"backup.failed", "operations.server.read", "critical"},
 		{"server.offline", "operations.server.read", "critical"},
 		{"build.failed", "development.repo.read", "error"},
-		{"test.failed", "qa.report.read", "error"},
+		{"test.failed", "qa.testcase.read", "error"},
 		{"incident.created", "support.incident.read", "error"},
 		{"release.created", "development.repo.read", "info"},
 	}
@@ -47,26 +47,75 @@ func TestMappedEventsCarryTheirAudienceAndSeverity(t *testing.T) {
 	}
 }
 
-// Every audience must be a permission RBAC actually defines. A notification
-// addressed to a permission nobody can hold is invisible, and one addressed
-// to a typo is invisible in a way nobody notices.
-func TestEveryAudienceIsAKnownPermission(t *testing.T) {
-	// The set defined in migration 003.
-	known := map[string]bool{
-		"*": true, "crm.client.read": true, "projects.task.read": true,
-		"projects.task.edit": true, "qa.report.read": true, "qa.testcase.read": true,
-		"qa.testcase.execute": true, "qa.bug.write": true, "development.repo.read": true,
-		"development.pr.write": true, "wiki.document.read": true, "wiki.document.edit": true,
-		"operations.server.read": true, "operations.server.manage": true,
-		"support.incident.read": true, "support.incident.write": true, "portal.read": true,
-		"adapters.read": true, "events.publish": true, "global_ids.read": true,
+// rolePermissions mirrors the human role grants in migration 003.
+//
+// It is duplicated here rather than read from the database because this is a
+// statement about the mapping table, which is compiled in: an audience has to
+// be a permission some role actually holds, and that is knowable without a
+// running platform.
+var rolePermissions = map[string][]string{
+	"Manager":   {"crm.client.read", "projects.task.read", "qa.report.read", "wiki.document.read", "operations.server.read", "support.incident.read"},
+	"Developer": {"projects.task.read", "projects.task.edit", "development.repo.read", "development.pr.write", "qa.testcase.read", "wiki.document.read", "wiki.document.edit", "operations.server.read"},
+	"QA":        {"projects.task.read", "qa.testcase.read", "qa.testcase.execute", "qa.bug.write", "wiki.document.read"},
+	"Support":   {"crm.client.read", "projects.task.read", "wiki.document.read", "operations.server.read", "support.incident.read", "support.incident.write"},
+	"DevOps":    {"development.repo.read", "wiki.document.read", "wiki.document.edit", "operations.server.read", "operations.server.manage"},
+	// Customer is scope-confined and is deliberately excluded: its
+	// permissions mean "inside my own scope", so holding one is not the same
+	// as being in an audience.
+}
+
+// An audience must be a permission that some unconfined role actually holds.
+//
+// A permission RBAC merely defines is not enough: qa.report.read exists, but
+// only the Manager role holds it, so test.failed addressed there would never
+// have reached the QA team. Nothing would have failed — the notification
+// would simply have been invisible to the people it was for, which is the
+// kind of defect that is only noticed by its absence.
+func TestEveryAudienceIsHeldBySomeRole(t *testing.T) {
+	holders := map[string][]string{}
+	for role, permissions := range rolePermissions {
+		for _, permission := range permissions {
+			holders[permission] = append(holders[permission], role)
+		}
 	}
 	for event, mapping := range Mappings() {
-		if !known[mapping.Permission] {
-			t.Errorf("%s is addressed to %q, which RBAC does not define", event, mapping.Permission)
-		}
 		if mapping.Permission == "*" {
 			t.Errorf("%s is addressed to the administrator wildcard, which would notify only administrators", event)
+			continue
+		}
+		if len(holders[mapping.Permission]) == 0 {
+			t.Errorf("%s is addressed to %q, which no unconfined role holds: nobody but an administrator would ever see it",
+				event, mapping.Permission)
+		}
+	}
+}
+
+// The events each role would be interrupted by, stated explicitly. A change
+// to the mapping table that silently moves an event away from the people who
+// act on it should have to be written down here first.
+func TestRolesReceiveTheEventsTheyActOn(t *testing.T) {
+	cases := map[string][]string{
+		"QA":        {"test.failed"},
+		"Developer": {"build.failed", "release.created", "test.failed", "backup.failed", "server.offline"},
+		"DevOps":    {"backup.failed", "server.offline", "build.failed", "release.created"},
+		"Support":   {"incident.created", "backup.failed", "server.offline"},
+	}
+	mappings := Mappings()
+	for role, events := range cases {
+		held := map[string]bool{}
+		for _, permission := range rolePermissions[role] {
+			held[permission] = true
+		}
+		for _, event := range events {
+			mapping, mapped := mappings[event]
+			if !mapped {
+				t.Errorf("%s is not in the mapping table", event)
+				continue
+			}
+			if !held[mapping.Permission] {
+				t.Errorf("%s would not reach %s: it is addressed to %q, which that role does not hold",
+					event, role, mapping.Permission)
+			}
 		}
 	}
 }

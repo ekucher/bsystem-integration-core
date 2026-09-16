@@ -58,10 +58,14 @@ type Mapping struct {
 // every entry is a decision that some group of people wants to be interrupted,
 // and the default for an unknown event is not to interrupt anyone.
 var mappings = map[string]Mapping{
-	"backup.failed":    {Permission: "operations.server.read", Severity: "critical", Title: "Backup failed"},
-	"server.offline":   {Permission: "operations.server.read", Severity: "critical", Title: "Server offline"},
-	"build.failed":     {Permission: "development.repo.read", Severity: "error", Title: "Build failed"},
-	"test.failed":      {Permission: "qa.report.read", Severity: "error", Title: "Test run failed"},
+	"backup.failed":  {Permission: "operations.server.read", Severity: "critical", Title: "Backup failed"},
+	"server.offline": {Permission: "operations.server.read", Severity: "critical", Title: "Server offline"},
+	"build.failed":   {Permission: "development.repo.read", Severity: "error", Title: "Build failed"},
+	// qa.testcase.read rather than qa.report.read: the QA role holds the
+	// former and not the latter, and a failed test run has to reach the
+	// people who run tests. The E2E suite caught this addressed to a
+	// permission only Managers hold.
+	"test.failed":      {Permission: "qa.testcase.read", Severity: "error", Title: "Test run failed"},
 	"incident.created": {Permission: "support.incident.read", Severity: "error", Title: "Incident created"},
 	"release.created":  {Permission: "development.repo.read", Severity: "info", Title: "Release created"},
 }
