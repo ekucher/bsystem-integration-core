@@ -107,6 +107,37 @@ Event outcomes are counted rather than only logged, because "nothing happened"
 and "everything failed to publish" look identical on a dashboard that counts
 only successes.
 
+### Build and schema
+
+Read when something looks wrong rather than graphed, so these sit outside the
+dashboard contract.
+
+| Metric | Type | Labels |
+| --- | --- | --- |
+| `bsystem_build_info` | gauge | `version`, `commit`, `built_at`, `schema_embedded` |
+| `bsystem_schema_migrations_applied` | gauge | `level` |
+| `bsystem_schema_migrations_drifted` | gauge | — |
+
+The applied level is read from the database rather than from the binary, so it
+and `schema_embedded` disagree exactly when the database is behind the code.
+
+Drift is a different failure and the only series that shows it. An edited
+migration keeps its filename, so a database that applied the old content and
+one migrated from the current source report the same level and the same applied
+count — migrations are re-applied on every startup and written to be
+idempotent, so the edit runs without failing and whatever it added is simply
+absent from the older database. The ledger records the hash of each file as it
+was when a database first applied it and never rewrites it; this series counts
+the migrations whose file no longer matches. Zero is published rather than
+nothing, so "no drift" is distinguishable from "nobody is reporting", and the
+names are logged at error level once at startup.
+
+A non-zero value is not an outage and the platform does not refuse to start on
+it: the schema is applied and the service works. It means two deployments
+claiming the same schema version may not have the same schema, which is worth
+knowing before the next migration is written against an assumption about what
+is already there.
+
 ## The tables above are enforced
 
 `cmd/server/metrics_contract_test.go` renders the real registry, records one
