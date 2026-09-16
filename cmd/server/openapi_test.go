@@ -13,9 +13,12 @@ import (
 
 // openAPIDocument is the subset of docs/openapi.yaml the contract test reads.
 type openAPIDocument struct {
-	OpenAPI  string                                `yaml:"openapi"`
-	Security []map[string][]string                 `yaml:"security"`
-	Paths    map[string]map[string]openAPIOperator `yaml:"paths"`
+	OpenAPI    string                                `yaml:"openapi"`
+	Security   []map[string][]string                 `yaml:"security"`
+	Paths      map[string]map[string]openAPIOperator `yaml:"paths"`
+	Components struct {
+		Parameters map[string]openAPIParameter `yaml:"parameters"`
+	} `yaml:"components"`
 }
 
 type openAPIOperator struct {
@@ -24,6 +27,17 @@ type openAPIOperator struct {
 	Tags        []string               `yaml:"tags"`
 	Security    *[]map[string][]string `yaml:"security"`
 	Responses   map[string]yaml.Node   `yaml:"responses"`
+	Parameters  []openAPIParameter     `yaml:"parameters"`
+}
+
+type openAPIParameter struct {
+	Name string `yaml:"name"`
+	In   string `yaml:"in"`
+	// Ref is how a shared parameter is declared. Reading only the inline form
+	// would make every parameter under components invisible here — limit and
+	// cursor among them, on twelve routes — and the check would pass because
+	// it never looked.
+	Ref string `yaml:"$ref"`
 }
 
 var httpMethods = map[string]string{
@@ -475,6 +489,116 @@ func TestExamplesUseReservedPlaceholderDomains(t *testing.T) {
 	for _, banned := range []string{"@gmail.com", "@outlook.com", "@yahoo.com"} {
 		if strings.Contains(strings.ToLower(string(body)), banned) {
 			t.Errorf("an example uses a real mail provider (%s)", banned)
+		}
+	}
+}
+
+// resolveParameter follows a $ref into components, so a shared parameter is
+// checked like an inline one rather than silently skipped.
+func resolveParameter(t *testing.T, specification openAPIDocument, parameter openAPIParameter) openAPIParameter {
+	t.Helper()
+	if parameter.Ref == "" {
+		return parameter
+	}
+	const prefix = "#/components/parameters/"
+	if !strings.HasPrefix(parameter.Ref, prefix) {
+		t.Errorf("parameter $ref %q does not point into components/parameters", parameter.Ref)
+		return openAPIParameter{}
+	}
+	resolved, ok := specification.Components.Parameters[strings.TrimPrefix(parameter.Ref, prefix)]
+	if !ok {
+		t.Errorf("parameter $ref %q resolves to nothing", parameter.Ref)
+		return openAPIParameter{}
+	}
+	return resolved
+}
+
+// Every documented query parameter is read, and every query parameter read is
+// documented.
+//
+// The rest of this file holds the repository to that rule for routes and for
+// error codes: the document and the implementation must describe the same
+// surface, in both directions. Parameters were the level it stopped at, and
+// they fail more quietly than a route does.
+//
+// A route that disappears gives a caller a 404. A parameter that stops being
+// read gives them a 200 and the wrong rows — `?severity=critical` returns
+// every incident, and nothing anywhere says the filter was ignored. In the
+// other direction, a parameter the implementation honours but the document
+// omits is a surface callers cannot discover and the platform cannot change
+// without breaking somebody who found it anyway.
+//
+// Both directions hold today; this is what keeps them holding. What it proves
+// is that the name is read somewhere in the server package, not that the right
+// handler reads it — a parameter moved to the wrong route would pass. The
+// regression it is for is a filter block dropped in a refactor.
+func TestEveryDocumentedQueryParameterIsRead(t *testing.T) {
+	specification := loadOpenAPI(t)
+
+	documented := map[string][]string{}
+	for path, item := range specification.Paths {
+		for method, operation := range item {
+			verb, ok := httpMethods[method]
+			if !ok {
+				continue
+			}
+			for _, parameter := range operation.Parameters {
+				parameter = resolveParameter(t, specification, parameter)
+				if parameter.In == "query" {
+					documented[parameter.Name] = append(documented[parameter.Name], verb+" "+path)
+				}
+			}
+		}
+	}
+	if len(documented) == 0 {
+		t.Fatal("the specification documents no query parameter; this check would pass vacuously")
+	}
+
+	sources, err := filepath.Glob("*.go")
+	if err != nil {
+		t.Fatalf("list sources: %v", err)
+	}
+	var collected strings.Builder
+	for _, source := range sources {
+		if strings.HasSuffix(source, "_test.go") {
+			continue
+		}
+		text, err := os.ReadFile(source)
+		if err != nil {
+			t.Fatalf("read %s: %v", source, err)
+		}
+		collected.Write(text)
+	}
+	if collected.Len() == 0 {
+		t.Fatal("no handler source was read; this check would pass vacuously")
+	}
+	handlers := collected.String()
+
+	// Both forms the standard library offers: Get for a single value, and the
+	// map index for a parameter that may repeat.
+	for name, routes := range documented {
+		single := strings.Contains(handlers, `.Get("`+name+`")`)
+		repeated := strings.Contains(handlers, `Query()["`+name+`"]`)
+		if !single && !repeated {
+			sort.Strings(routes)
+			t.Errorf("query parameter %q is documented on %v but no handler reads it; a caller sending it gets a 200 and unfiltered results", name, routes)
+		}
+	}
+
+	// The other direction. Anything read must be declared, or it is a surface
+	// nobody can find and nobody may safely change.
+	reads := regexp.MustCompile(`(?:query|r\.URL\.Query\(\))(?:\.Get\("([a-z_]+)"\)|\["([a-z_]+)"\])`)
+	found := reads.FindAllStringSubmatch(handlers, -1)
+	if len(found) == 0 {
+		t.Fatal("no query parameter read was found in the handlers; the reverse check would pass vacuously")
+	}
+	for _, match := range found {
+		name := match[1]
+		if name == "" {
+			name = match[2]
+		}
+		if _, ok := documented[name]; !ok {
+			t.Errorf("handlers read query parameter %q but the specification does not document it", name)
 		}
 	}
 }
