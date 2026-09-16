@@ -266,6 +266,47 @@ func (g *GaugeFunc) writeTo(w io.Writer) {
 	}
 }
 
+// --- CounterFunc ------------------------------------------------------------
+
+// CounterFunc is a cumulative counter sampled at scrape time.
+//
+// It exists because some counters are owned elsewhere — a connection pool
+// keeps its own acquisition tallies — and mirroring them into a variable
+// would drift out of date exactly when it matters. A GaugeFunc would sample
+// them just as well, but it would declare the wrong type: `_total` is
+// reserved for counters, and a series that names itself a counter while
+// announcing `# TYPE ... gauge` misleads every tool that reads the type,
+// starting with promtool.
+type CounterFunc struct {
+	metricName string
+	help       string
+	labels     []string
+	sample     func() []Sample
+}
+
+// CounterFunc registers a counter sampled when the registry is rendered. The
+// sampled values must be cumulative and never decrease within a process.
+func (r *Registry) CounterFunc(name, help string, labels []string, sample func() []Sample) *CounterFunc {
+	counter := &CounterFunc{metricName: name, help: help, labels: labels, sample: sample}
+	r.register(counter)
+	return counter
+}
+
+func (c *CounterFunc) name() string { return c.metricName }
+
+func (c *CounterFunc) writeTo(w io.Writer) {
+	writeHeader(w, c.metricName, c.help, "counter")
+
+	samples := c.sample()
+	rendered := make(map[labelSet]float64, len(samples))
+	for _, s := range samples {
+		rendered[makeLabelSet(c.labels, s.Labels)] = s.Value
+	}
+	for _, key := range sortedLabelSets(rendered) {
+		fmt.Fprintf(w, "%s%s %s\n", c.metricName, key, formatFloat(rendered[key]))
+	}
+}
+
 // --- Histogram --------------------------------------------------------------
 
 // DefaultDurationBuckets covers the range BSYSTEM request latencies fall in:

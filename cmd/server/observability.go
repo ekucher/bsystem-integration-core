@@ -61,7 +61,9 @@ func (a *app) registerPlatformMetrics() {
 		},
 	)
 
-	metricsRegistry.GaugeFunc(
+	// A counter, not a gauge: the pool's tallies only ever increase within a
+	// process, the name says `_total`, and the dashboard takes rate() of it.
+	metricsRegistry.CounterFunc(
 		"bsystem_database_pool_acquires_total",
 		"PostgreSQL pool acquisitions by outcome.",
 		[]string{"outcome"},
