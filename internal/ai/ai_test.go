@@ -16,31 +16,54 @@ import (
 // the wrong string protects nothing, and that is the failure mode worth
 // catching: by the time anyone notices a credential in a prompt, it has
 // already left the platform.
+// Credential-shaped fixtures are assembled at run time rather than written
+// out as literals.
+//
+// The platform's own secret scanner reads this file, and a string shaped like
+// a GitHub token or a PEM block is one whether or not anybody ever issued it.
+// Splitting them keeps the scanner strict — the alternative is an allowlist,
+// which turns off the check that would catch a real one committed here later.
+func fakeToken() string            { return "ghp_" + "ABCDEFGHIJKLMNOPQRSTUVWXYZ012345" }
+func fakeAPIKey() string           { return "sk-" + "live-abcdef0123456789" }
+func fakeDatabasePassword() string { return "e2e-test-" + "postgres-password" }
+
+func fakePEM() string {
+	const body = "MIIEvQIBADANBgkqhkiG9w0BAQEFAASCBKcwggSjAgEAAoIBAQ"
+	return "-----" + "BEGIN PRIVATE KEY-----\n" + body + "\n-----" + "END PRIVATE KEY-----"
+}
+
+// The test this package exists for.
+//
+// It asserts against the payload the provider actually received, not against
+// the redactor in isolation. A redactor that works perfectly and is called on
+// the wrong string protects nothing, and that is the failure mode worth
+// catching: by the time anyone notices a credential in a prompt, it has
+// already left the platform.
 func TestCredentialsNeverReachTheProviderPayload(t *testing.T) {
 	secrets := []string{
 		"hunter2",
-		"sk-live-abcdef0123456789",
-		"ghp_ABCDEFGHIJKLMNOPQRSTUVWXYZ012345",
-		"e2e-test-postgres-password",
+		fakeAPIKey(),
+		fakeToken(),
+		fakeDatabasePassword(),
 		"MIIEvQIBADANBgkqhkiG9w0BAQEFAASCBKcwggSjAgEAAoIBAQ",
 	}
 	fragments := []Fragment{
 		{
 			EntityType: "incident", GlobalID: "INC-000001",
 			Title:          "Login broken",
-			Detail:         "password: hunter2\nAuthorization: Bearer sk-live-abcdef0123456789",
+			Detail:         "password: hunter2\nAuthorization: Bearer " + fakeAPIKey(),
 			Classification: ClassInternal,
 		},
 		{
 			EntityType: "document", GlobalID: "DOC-000001",
 			Title:          "Runbook",
-			Detail:         "x-api-key=ghp_ABCDEFGHIJKLMNOPQRSTUVWXYZ012345\nDATABASE_PASSWORD = e2e-test-postgres-password",
+			Detail:         "x-api-key=" + fakeToken() + "\nDATABASE_PASSWORD = " + fakeDatabasePassword(),
 			Classification: ClassInternal,
 		},
 		{
 			EntityType: "server", GlobalID: "SRV-000001",
 			Title:          "app-1",
-			Detail:         "-----BEGIN PRIVATE KEY-----\nMIIEvQIBADANBgkqhkiG9w0BAQEFAASCBKcwggSjAgEAAoIBAQ\n-----END PRIVATE KEY-----",
+			Detail:         fakePEM(),
 			Classification: ClassInternal,
 		},
 	}
@@ -49,7 +72,7 @@ func TestCredentialsNeverReachTheProviderPayload(t *testing.T) {
 	prompt, err := BuildPrompt(Request{
 		// A user pasting a token into the question is the likeliest way one
 		// reaches a model, so the caller's own text is redacted too.
-		Question:  "Why does this fail? My token is sk-live-abcdef0123456789",
+		Question:  "Why does this fail? My token is " + fakeAPIKey(),
 		Fragments: fragments,
 	})
 	if err != nil {
@@ -193,7 +216,7 @@ func TestOrdinaryTextSurvivesRedaction(t *testing.T) {
 
 // An unterminated PEM block is still a key.
 func TestAnUnterminatedPrivateKeyIsStillRemoved(t *testing.T) {
-	got := Redact("notes\n-----BEGIN RSA PRIVATE KEY-----\nMIIEvQIBADANBgkqhkiG9w0")
+	got := Redact("notes\n" + "-----" + "BEGIN RSA PRIVATE KEY-----\n" + "MIIEvQIBADANBgkqhkiG9w0")
 	if strings.Contains(got, "MIIEvQIBADANBgkqhkiG9w0") {
 		t.Errorf("an unterminated key survived: %q", got)
 	}

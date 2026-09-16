@@ -1,0 +1,25 @@
+# Reviewed gitleaks findings.
+#
+# Each line is a fingerprint: commit, file, rule and line. That specificity is
+# the point — an entry here cannot mask a finding anywhere else, in any other
+# commit, or even on a different line of the same file. A broad allowlist
+# would turn off the check that catches a real credential committed later,
+# which is the opposite of what a security scan is for.
+#
+# Both entries below are fabricated fixtures in the test that proves the AI
+# gateway's redactor removes credentials before a prompt reaches a provider.
+# Nothing was ever issued and nothing grants access to anything.
+#
+# The literals have since been removed from the working tree: the fixtures are
+# assembled at run time from parts, so no future commit carries a
+# credential-shaped string. These entries exist only because the commit that
+# did is already published, and rewriting published history is not something
+# to do for a false positive.
+
+# A PEM block used to prove private keys are removed whole.
+7c43e4ab2947ec5459f7682e75ed689bf9eb5dda:internal/ai/ai_test.go:private-key:43
+
+# The E2E stack's documented test-only database password, matched on entropy.
+# The same value appears in docker-compose.e2e.yml, where it is the password
+# for a throwaway container that exists for the length of a CI run.
+7c43e4ab2947ec5459f7682e75ed689bf9eb5dda:internal/ai/ai_test.go:generic-api-key:24
