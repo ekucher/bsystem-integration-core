@@ -61,21 +61,46 @@ func (a *app) listServers(w http.ResponseWriter, r *http.Request) {
 }
 
 func (a *app) getServer(w http.ResponseWriter, r *http.Request) {
+	principal := principalFrom(r.Context())
+	confined := a.authz.IsConfined(principal)
+
+	// A caller who cannot hold the permission anywhere is refused before the
+	// lookup happens. Looking up first would let them tell an existing server
+	// from a missing one by the status code, and enumerate which Global IDs
+	// name infrastructure. A scope-confined caller is exempt, because its
+	// authority is per-resource and has to be evaluated against the resolved
+	// server instead.
+	if !confined && !a.authorizeResource(w, r, "operations.server.read", authz.ScopeGlobal, "*") {
+		return
+	}
+
 	server, err := a.db.GetServer(r.Context(), r.PathValue("id"))
 	switch {
 	case errors.Is(err, platformdb.ErrServerNotFound):
-		// A server the caller may not read and one that does not exist are
-		// answered identically, so the endpoint cannot be used to enumerate
-		// which Global IDs name infrastructure.
-		writeJSON(w, http.StatusNotFound, map[string]string{"error": "server not found", "code": "not_found"})
+		notFound(w)
 		return
 	case err != nil:
 		logger.ErrorContext(r.Context(), "server lookup failed", "error", err.Error())
 		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "operations store unavailable"})
 		return
 	}
+
 	scopeType, scopeID := serverScope(server)
-	if !a.authorizeResource(w, r, "operations.server.read", scopeType, scopeID) {
+	decision, err := a.authz.Evaluate(r.Context(), principal, "operations.server.read", authz.Resource(scopeType, scopeID))
+	if err != nil {
+		logger.ErrorContext(r.Context(), "authorization evaluation failed", "error", err.Error())
+		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "authorization store unavailable"})
+		return
+	}
+	if !decision.Allowed {
+		// A confined caller is told the server does not exist, because
+		// "exists but not yours" is what it would use to enumerate its
+		// neighbours' infrastructure.
+		if confined {
+			notFound(w)
+		} else {
+			writeDenied(w, decision)
+		}
 		return
 	}
 	writeJSON(w, http.StatusOK, server)

@@ -101,9 +101,19 @@ a grant can still name exactly one host. Getting this backwards would mean an
 administrator had to write a grant per machine, which is how a scope model
 stops being used.
 
-A server the caller may not read and one that does not exist are answered
-identically, so the endpoint cannot be used to enumerate which Global IDs name
+The refusal happens **before** the lookup. A caller who cannot hold
+`operations.server.read` anywhere is refused without the platform reading
+anything, so they get the same answer for a server that exists and one that
+does not. Looking up first would let them enumerate which Global IDs name
+infrastructure — a database they were refused access to, read one bit at a
+time. A scope-confined caller is exempt from that early refusal, because its
+authority is per-resource and has to be evaluated against the resolved server;
+when that evaluation denies, it is told the server does not exist, since
+"exists but not yours" is what it would use to enumerate its neighbours'
 infrastructure.
+
+A test asserts the ordering by reading the handler, because the bug it guards
+against is invisible in the responses of a correctly authorized caller.
 
 ## What a report causes
 

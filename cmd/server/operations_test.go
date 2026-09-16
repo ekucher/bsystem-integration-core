@@ -1,6 +1,8 @@
 package main
 
 import (
+	"os"
+	"strings"
 	"testing"
 
 	"github.com/ekucher/bsystem-integration-core/internal/authz"
@@ -84,5 +86,35 @@ func TestSeriousOperationsEventsNotifySomebody(t *testing.T) {
 		case shouldNotify && mapping.Permission != "operations.server.read":
 			t.Errorf("%s notifies %q rather than the people who read server state", name, mapping.Permission)
 		}
+	}
+}
+
+// The refusal must happen before the lookup. If it did not, a caller without
+// the permission could tell an existing server from a missing one by the
+// status code and enumerate which Global IDs name infrastructure — a database
+// they were refused access to, read one bit at a time.
+func TestTheServerDetailEndpointRefusesBeforeItLooksAnythingUp(t *testing.T) {
+	source, err := os.ReadFile("operations_business.go")
+	if err != nil {
+		t.Fatalf("read handler: %v", err)
+	}
+	body := string(source)
+	start := strings.Index(body, "func (a *app) getServer(")
+	if start < 0 {
+		t.Fatal("getServer is not in this file any more; this test needs updating")
+	}
+	handler := body[start:]
+	if end := strings.Index(handler[1:], "\nfunc "); end >= 0 {
+		handler = handler[:end+1]
+	}
+	authorize := strings.Index(handler, "authorizeResource")
+	lookup := strings.Index(handler, "a.db.GetServer")
+	switch {
+	case authorize < 0:
+		t.Fatal("getServer no longer refuses a caller who cannot hold the permission anywhere")
+	case lookup < 0:
+		t.Fatal("getServer no longer looks a server up; this test needs updating")
+	case authorize > lookup:
+		t.Error("getServer looks the server up before refusing, so a refused caller can tell an existing server from a missing one")
 	}
 }
