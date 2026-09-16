@@ -89,6 +89,7 @@ alert selects `state="open"` instead of remembering which number means open.
 | `bsystem_database_pool_acquires_total` | counter | `outcome` |
 | `bsystem_nats_up` | gauge | — |
 | `bsystem_events_published_total` | counter | `event`, `outcome` |
+| `bsystem_audit_writes_total` | counter | `action`, `outcome` |
 
 Pool saturation is the metric that explains a slow platform when every
 individual query is fast: requests are waiting for a connection, not for the
@@ -106,6 +107,23 @@ else that reads the type were being told something untrue.
 Event outcomes are counted rather than only logged, because "nothing happened"
 and "everything failed to publish" look identical on a dashboard that counts
 only successes.
+
+Audit writes are counted for the same reason, applied to the record least able
+to survive being missed. An event that fails to publish can be re-derived from
+the state that produced it and a notification can be raised again; an audit row
+that was never written cannot be reconstructed from anything, because its whole
+purpose is to record that somebody did something to a system that keeps no
+other trace of who asked. A scope grant that succeeded with its audit write
+failing is a live permission change nobody can attribute.
+
+The request is deliberately not failed when the audit write fails: the action
+it describes has already happened, and reporting failure for a completed action
+would be wrong in the other direction. `outcome="failed"` above zero is
+therefore not a request-level error anywhere else in this file — it is a hole
+in the governance record, and it is the only place that shows one.
+
+The `action` is a label and the resource is not. Actions are a small closed
+set; a resource id is unbounded and would mint a time series per record.
 
 ### Build and schema
 

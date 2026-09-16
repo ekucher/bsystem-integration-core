@@ -7,6 +7,7 @@ import (
 	"net/http/httptest"
 	"net/url"
 	"os"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -431,4 +432,99 @@ func TestAnInvalidTokenIsRefusedWithoutExplanation(t *testing.T) {
 			t.Errorf("the refusal discloses %q: %s", leak, recorder.Body.String())
 		}
 	}
+}
+
+// A failed audit write is counted, not only logged.
+//
+// The platform already makes this argument twice in its own source, for
+// published events and for raised notifications: an outcome that is only
+// logged is invisible on a dashboard, and a pipeline that has silently stopped
+// looks exactly like one with nothing to do. It was not applied to the audit
+// write, which is the record least able to survive being missed.
+//
+// The asymmetry is the point. An event that fails to publish can be re-derived
+// from the state that produced it; a notification can be raised again. An
+// audit record that was never written cannot be reconstructed from anything,
+// because its whole purpose is to record that somebody did something to a
+// system that keeps no other trace of who asked. A scope grant that succeeded
+// with no audit row is a live permission change nobody can attribute.
+//
+// The request is deliberately still not failed when the audit write fails: the
+// action it describes has already happened, and reporting failure for a
+// completed action would be a lie in the other direction. What changes is that
+// the hole is now countable.
+func TestAFailedAuditWriteIsCountedRatherThanOnlyLogged(t *testing.T) {
+	application, _ := integrationApp(t, matrixPrincipals())
+
+	const action = "audit.counter.probe"
+	access := meResponse{Subject: "probe-subject", ID: "USR-probe"}
+
+	before := auditOutcome(t, action, "written")
+
+	request := httptest.NewRequest(http.MethodGet, "/api/v1/clients", nil)
+	application.audit(request, access, action, "probe", "probe-1", nil)
+
+	if got := auditOutcome(t, action, "written"); got != before+1 {
+		t.Errorf("written count = %v, want %v; a successful audit write must be counted", got, before+1)
+	}
+
+	// A context already past its deadline is how the database looks to this
+	// code path when it is unreachable: InsertAudit returns an error and the
+	// row does not exist.
+	dead, cancel := context.WithCancel(context.Background())
+	cancel()
+	failing := httptest.NewRequest(http.MethodGet, "/api/v1/clients", nil).WithContext(dead)
+
+	failedBefore := auditOutcome(t, action, "failed")
+	application.audit(failing, access, action, "probe", "probe-2", nil)
+	if got := auditOutcome(t, action, "failed"); got != failedBefore+1 {
+		t.Errorf("failed count = %v, want %v; an audit write that did not happen must not be silent", got, failedBefore+1)
+	}
+
+	// And it really did not happen: the counter is reporting a genuine loss
+	// rather than a mislabelled success.
+	ctx, listCancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer listCancel()
+	events, err := application.db.ListAudit(ctx, 200)
+	if err != nil {
+		t.Fatalf("list audit: %v", err)
+	}
+	found := map[string]bool{}
+	for _, event := range events {
+		if event.Action == action {
+			found[event.ResourceID] = true
+		}
+	}
+	if !found["probe-1"] {
+		t.Error("the write counted as written left no row")
+	}
+	if found["probe-2"] {
+		t.Error("the write counted as failed left a row; the counter is describing something other than what happened")
+	}
+}
+
+// auditOutcome reads one sample straight out of the rendered exposition, so
+// the test reads what an operator would scrape rather than an internal
+// counter's field.
+func auditOutcome(t *testing.T, action, outcome string) float64 {
+	t.Helper()
+
+	var rendered strings.Builder
+	metricsRegistry.Render(&rendered)
+
+	want := `bsystem_audit_writes_total{action="` + action + `",outcome="` + outcome + `"}`
+	for _, line := range strings.Split(rendered.String(), "\n") {
+		if !strings.HasPrefix(line, want) {
+			continue
+		}
+		fields := strings.Fields(line)
+		value, err := strconv.ParseFloat(fields[len(fields)-1], 64)
+		if err != nil {
+			t.Fatalf("cannot parse %q: %v", line, err)
+		}
+		return value
+	}
+	// A counter publishes no series until something increments it, so absence
+	// is zero rather than a failure.
+	return 0
 }
