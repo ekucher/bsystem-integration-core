@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
@@ -313,7 +314,7 @@ func (db *DB) CreateGlobalEntity(ctx context.Context, entityType, source, source
 	err = tx.QueryRow(ctx, `UPDATE global_id_counters SET next_value=next_value+1 WHERE entity_type=$1 RETURNING prefix,next_value-1`, entityType).Scan(&prefix, &value)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
-			return GlobalEntity{}, fmt.Errorf("unsupported entity_type %q", entityType)
+			return GlobalEntity{}, fmt.Errorf("%w: %q", ErrUnsupportedEntityType, entityType)
 		}
 		return GlobalEntity{}, err
 	}
@@ -322,12 +323,53 @@ func (db *DB) CreateGlobalEntity(ctx context.Context, entityType, source, source
 	var created time.Time
 	err = tx.QueryRow(ctx, `INSERT INTO global_entities (global_id,entity_type,source,source_id,tenant_id,metadata) VALUES ($1,$2,$3,$4,NULLIF($5,''),$6::jsonb) RETURNING created_at`, globalID, entityType, source, sourceID, tenantID, string(metaJSON)).Scan(&created)
 	if err != nil {
+		// Another caller allocated this same source record between our SELECT
+		// and our INSERT. The unique constraint is what makes that safe — it
+		// is the reason no duplicate Global ID can exist — but losing the race
+		// is not an error to report. The answer the caller asked for now
+		// exists, and allocation on first sighting is by nature something
+		// several requests do at once.
+		//
+		// This is the normal path, not an edge: a platform that mints a Global
+		// ID the first time it sees a source record will see it first from two
+		// requests whenever anything fans out.
+		if isUniqueViolation(err) {
+			return db.globalEntityBySource(ctx, entityType, source, sourceID)
+		}
 		return GlobalEntity{}, err
 	}
 	if err := tx.Commit(ctx); err != nil {
 		return GlobalEntity{}, err
 	}
 	return GlobalEntity{GlobalID: globalID, EntityType: entityType, Source: source, SourceID: sourceID, TenantID: tenantID, Metadata: metadata, CreatedAt: created}, nil
+}
+
+// ErrUnsupportedEntityType is the one CreateGlobalEntity failure a caller
+// caused and can fix. It is a sentinel so the HTTP layer can tell it apart
+// from a database failure without matching on message text, which is how a
+// raw SQL error ends up being answered as a client mistake.
+var ErrUnsupportedEntityType = errors.New("unsupported entity_type")
+
+// isUniqueViolation reports whether the database refused a row because it
+// already exists. 23505 is PostgreSQL's unique_violation.
+func isUniqueViolation(err error) bool {
+	var pgErr *pgconn.PgError
+	return errors.As(err, &pgErr) && pgErr.Code == "23505"
+}
+
+// globalEntityBySource reads the allocation that already exists for an upstream
+// record. It runs outside the losing transaction deliberately: that transaction
+// cannot see the winner's committed row, because it took its snapshot first.
+func (db *DB) globalEntityBySource(ctx context.Context, entityType, source, sourceID string) (GlobalEntity, error) {
+	var item GlobalEntity
+	var meta []byte
+	err := db.pool.QueryRow(ctx, `SELECT global_id,entity_type,source,source_id,COALESCE(tenant_id,''),metadata,created_at FROM global_entities WHERE source=$1 AND entity_type=$2 AND source_id=$3`, source, entityType, sourceID).
+		Scan(&item.GlobalID, &item.EntityType, &item.Source, &item.SourceID, &item.TenantID, &meta, &item.CreatedAt)
+	if err != nil {
+		return GlobalEntity{}, err
+	}
+	_ = json.Unmarshal(meta, &item.Metadata)
+	return item, nil
 }
 
 func (db *DB) ResolveGlobalEntity(ctx context.Context, globalID string) (GlobalEntity, error) {

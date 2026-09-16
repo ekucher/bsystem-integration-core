@@ -386,7 +386,27 @@ func (a *app) createGlobalID(w http.ResponseWriter, r *http.Request) {
 	}
 	entity, err := a.db.CreateGlobalEntity(r.Context(), input.EntityType, input.Source, input.SourceID, strings.TrimSpace(input.TenantID), input.Metadata)
 	if err != nil {
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+		// Only one failure here is the caller's, and it is the only one whose
+		// text is safe to return. Everything else is the platform's, and
+		// err.Error() on a database failure is a raw SQL error: it names the
+		// table, the column tuple and the constraint, which is internal schema
+		// topology handed to whoever asked.
+		//
+		// Answering 400 for those was wrong twice over — it told a caller
+		// their valid input was invalid, and 400 is the status nobody retries.
+		if errors.Is(err, platformdb.ErrUnsupportedEntityType) {
+			writeJSON(w, http.StatusBadRequest, map[string]string{
+				"error": err.Error(),
+				"code":  "unsupported_entity_type",
+			})
+			return
+		}
+		logger.ErrorContext(r.Context(), "global id allocation failed", "entity_type", input.EntityType, "source", input.Source, "error", err.Error())
+		writeJSON(w, http.StatusInternalServerError, map[string]string{
+			"error":      "global id could not be allocated",
+			"code":       "global_id_allocation_failed",
+			"request_id": requestIDFrom(r.Context()),
+		})
 		return
 	}
 	a.audit(r, access, "global_id.created", input.EntityType, entity.GlobalID, map[string]any{"source": input.Source, "source_id": input.SourceID})

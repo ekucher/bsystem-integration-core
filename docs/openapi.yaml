@@ -2373,8 +2373,17 @@ components:
             `prompt_too_large`, `too_many_sources` — the request exceeds the
             gateway's bounds.
             `ai_unavailable` — the model provider could not be reached.
+            `unsupported_entity_type` — a Global ID was requested for an
+            entity type the platform mints no prefix for. The one allocation
+            failure the caller caused and can correct.
+            `global_id_allocation_failed` — the platform could not allocate.
+            The summary is deliberately free of database detail and carries a
+            `request_id` instead: the cause is in the platform's own logs,
+            correlated by that id, rather than in the answer.
           enum:
             - upstream_unavailable
+            - unsupported_entity_type
+            - global_id_allocation_failed
             - adapter_not_configured
             - capability_unsupported
             - scope_required
