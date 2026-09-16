@@ -5,6 +5,7 @@ import (
 	"net/url"
 	"os"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -225,5 +226,84 @@ func TestAnEditedMigrationIsReportedAsDrift(t *testing.T) {
 	// would be the same as reporting none: nobody would read the list.
 	if state.Applied < 2 {
 		t.Fatal("only one migration recorded; the specificity check below proves nothing")
+	}
+}
+
+// Several instances starting at once must all come up.
+//
+// Migrations are written to be idempotent, which makes them safe to re-run and
+// says nothing about running them simultaneously. CREATE TABLE IF NOT EXISTS
+// is not atomic against another session creating the same table: both pass the
+// existence check and one loses on an internal unique index. Migrate runs from
+// Open, so that is a failure to start.
+//
+// Measured before the lock, four instances released together against a fresh
+// database: three did not boot, each with
+//
+//	create schema history: ERROR: duplicate key value violates unique
+//	constraint "pg_type_typname_nsp_index" (SQLSTATE 23505)
+//
+// This is the ordinary shape of a deployment — several replicas, a rolling
+// restart, or everything returning at once after an outage — and a restart
+// policy turns it into flapping rather than reporting what happened.
+func TestSeveralInstancesCanStartAtOnce(t *testing.T) {
+	adminDSN := os.Getenv("TEST_DATABASE_URL")
+	if adminDSN == "" {
+		t.Skip("TEST_DATABASE_URL is not configured")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
+	defer cancel()
+
+	dsn := migrationDatabase(ctx, t, adminDSN)
+
+	const instances = 4
+	var start sync.WaitGroup
+	start.Add(1)
+	var finished sync.WaitGroup
+	errs := make([]error, instances)
+
+	for i := range instances {
+		finished.Add(1)
+		go func(i int) {
+			defer finished.Done()
+			start.Wait() // release them together, or they migrate in turn
+			db, err := Open(ctx, dsn)
+			errs[i] = err
+			if db != nil {
+				db.Close()
+			}
+		}(i)
+	}
+	start.Done()
+	finished.Wait()
+
+	for i, err := range errs {
+		if err != nil {
+			t.Errorf("instance %d did not start: %v", i, err)
+		}
+	}
+
+	// And the schema is whole rather than partly built by whichever instance
+	// got furthest. The ledger is the cheapest way to ask.
+	db, err := Open(ctx, dsn)
+	if err != nil {
+		t.Fatalf("open after the concurrent start: %v", err)
+	}
+	defer db.Close()
+
+	state, err := db.SchemaLevel(ctx)
+	if err != nil {
+		t.Fatalf("read schema level: %v", err)
+	}
+	embedded, err := EmbeddedSchemaLevel()
+	if err != nil {
+		t.Fatalf("read embedded level: %v", err)
+	}
+	if state.Applied != embedded.Applied || state.Level != embedded.Level {
+		t.Errorf("schema is at %s (%d applied), the binary carries %s (%d)",
+			state.Level, state.Applied, embedded.Level, embedded.Applied)
+	}
+	if len(state.Drifted) != 0 {
+		t.Errorf("a concurrently migrated database reports drift: %v", state.Drifted)
 	}
 }

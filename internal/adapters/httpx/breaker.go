@@ -52,7 +52,11 @@ func DefaultBreakerSettings() BreakerSettings {
 type Breaker struct {
 	settings BreakerSettings
 
-	mu           sync.Mutex
+	mu sync.Mutex
+	// episode identifies the run of calls the breaker is currently reasoning
+	// about. It changes on every transition, so a result from before the
+	// transition can be told apart from one the breaker is waiting for.
+	episode      uint64
 	state        BreakerState
 	failures     int
 	probes       int
@@ -78,53 +82,84 @@ func NewBreaker(settings BreakerSettings) *Breaker {
 
 func (b *Breaker) enabled() bool { return b != nil && b.settings.FailureThreshold > 0 }
 
+// Ticket identifies the episode a call was admitted in, so its result can be
+// told apart from a result the breaker is no longer waiting for.
+//
+// Without it, a call still in flight when the circuit opened reports its
+// outcome into whatever state the breaker has reached by the time it returns.
+// A success arriving during half-open closed the circuit on evidence gathered
+// before the upstream was even suspected — and, having reset the failure
+// count on the way, left the real probe's failure one short of reopening it.
+// The upstream was down, the probe proved it, and the breaker passed full
+// traffic through.
+//
+// Only reachable concurrently, and not exotic: a fan-out against an upstream
+// that goes down is the ordinary shape of an outage.
+type Ticket uint64
+
 // Allow reports whether a call may proceed, moving an expired open circuit to
-// half-open on the way.
-func (b *Breaker) Allow() bool {
+// half-open on the way. The ticket must be handed back to Succeed or Fail.
+func (b *Breaker) Allow() (bool, Ticket) {
 	if !b.enabled() {
-		return true
+		return true, 0
 	}
 	b.mu.Lock()
 	defer b.mu.Unlock()
 
 	switch b.state {
 	case BreakerClosed:
-		return true
+		return true, Ticket(b.episode)
 	case BreakerOpen:
 		if b.settings.now().Sub(b.openedAt) < b.settings.OpenFor {
 			b.shortCircuit++
-			return false
+			return false, 0
 		}
-		b.state = BreakerHalfOpen
-		b.transitions++
+		b.transition(BreakerHalfOpen)
 		b.probes = 1
 		b.successes = 0
-		return true
+		return true, Ticket(b.episode)
 	case BreakerHalfOpen:
 		if b.probes >= b.settings.HalfOpenProbes {
 			b.shortCircuit++
-			return false
+			return false, 0
 		}
 		b.probes++
-		return true
+		return true, Ticket(b.episode)
 	}
-	return true
+	return true, Ticket(b.episode)
 }
 
-// Succeed records a successful call.
-func (b *Breaker) Succeed() {
+// transition moves to a state and starts a new episode. Callers hold the lock.
+func (b *Breaker) transition(to BreakerState) {
+	b.state = to
+	b.transitions++
+	b.episode++
+}
+
+// current reports whether a ticket belongs to the episode in progress.
+// Callers hold the lock.
+func (b *Breaker) current(ticket Ticket) bool { return uint64(ticket) == b.episode }
+
+// Succeed records a successful call. The ticket is the one Allow returned.
+func (b *Breaker) Succeed(ticket Ticket) {
 	if !b.enabled() {
 		return
 	}
 	b.mu.Lock()
 	defer b.mu.Unlock()
 
+	// A result from a previous episode describes an upstream the breaker has
+	// already made up its mind about. Counting it would let stale evidence
+	// decide the current question.
+	if !b.current(ticket) {
+		return
+	}
+
 	switch b.state {
 	case BreakerHalfOpen:
 		b.successes++
 		if b.successes >= b.settings.HalfOpenProbes {
-			b.state = BreakerClosed
-			b.transitions++
+			b.transition(BreakerClosed)
 			b.failures, b.probes, b.successes = 0, 0, 0
 		}
 	default:
@@ -134,26 +169,32 @@ func (b *Breaker) Succeed() {
 
 // Fail records a failed call. Only failures that say something about the
 // upstream's availability count; pass retryable=false for deterministic ones.
-func (b *Breaker) Fail(retryable bool) {
+func (b *Breaker) Fail(ticket Ticket, retryable bool) {
 	if !b.enabled() || !retryable {
 		return
 	}
 	b.mu.Lock()
 	defer b.mu.Unlock()
 
+	// As in Succeed: a straggler already had its say. Counting it again would
+	// also push openedAt forward on every late arrival, keeping the circuit
+	// open for OpenFor measured from the last one rather than from when it
+	// opened.
+	if !b.current(ticket) {
+		return
+	}
+
 	switch b.state {
 	case BreakerHalfOpen:
 		// The probe failed, so the upstream has not recovered. Serve the full
 		// open period again rather than probing in a tight loop.
-		b.state = BreakerOpen
-		b.transitions++
+		b.transition(BreakerOpen)
 		b.openedAt = b.settings.now()
 		b.probes, b.successes = 0, 0
 	default:
 		b.failures++
 		if b.failures >= b.settings.FailureThreshold {
-			b.state = BreakerOpen
-			b.transitions++
+			b.transition(BreakerOpen)
 			b.openedAt = b.settings.now()
 			b.probes, b.successes = 0, 0
 		}

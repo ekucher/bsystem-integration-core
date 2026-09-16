@@ -124,7 +124,63 @@ const schemaHistoryUpgradeDDL = `
 ALTER TABLE schema_migrations ADD COLUMN IF NOT EXISTS source_checksum TEXT;
 UPDATE schema_migrations SET source_checksum = checksum WHERE source_checksum IS NULL`
 
+// migrationLock is the advisory lock every instance takes before migrating.
+//
+// The value is arbitrary and only has to be the same everywhere; it is a
+// digit-run so that a person reading pg_locks can tell it apart from an
+// application lock at a glance.
+const migrationLock int64 = 8_070_192_026
+
+// withMigrationLock serialises migrations across instances.
+//
+// Migrations are written to be idempotent, which makes them safe to re-run —
+// and did not make them safe to run *simultaneously*. CREATE TABLE IF NOT
+// EXISTS is not atomic against another session creating the same table: the
+// existence check and the creation do not share a lock, so both sessions pass
+// the check and one loses on an internal unique index with
+//
+//	ERROR: duplicate key value violates unique constraint
+//	"pg_type_typname_nsp_index" (SQLSTATE 23505)
+//
+// Migrate runs from Open, so that error is a failure to start. Measured
+// against a fresh database with four instances released together: three of the
+// four did not boot.
+//
+// It is the ordinary shape of a deployment — several replicas, a rolling
+// restart, or everything coming back at once after an outage — and a restart
+// policy hides it as flapping rather than reporting it as what it is.
+//
+// The lock is session-scoped and released explicitly. A transaction-scoped
+// lock would be tidier but would put every migration in one transaction,
+// which is a larger change to how they run than this problem calls for.
+func (db *DB) withMigrationLock(ctx context.Context, migrate func(context.Context) error) error {
+	conn, err := db.pool.Acquire(ctx)
+	if err != nil {
+		return fmt.Errorf("acquire connection for the migration lock: %w", err)
+	}
+	defer conn.Release()
+
+	if _, err := conn.Exec(ctx, `SELECT pg_advisory_lock($1)`, migrationLock); err != nil {
+		return fmt.Errorf("take the migration lock: %w", err)
+	}
+	defer func() {
+		// Unlocking must not be skipped because the caller's context expired
+		// during the migration: the lock is held by this session, and a
+		// session returned to the pool still holding it would block every
+		// later instance.
+		unlockCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 10*time.Second)
+		defer cancel()
+		_, _ = conn.Exec(unlockCtx, `SELECT pg_advisory_unlock($1)`, migrationLock)
+	}()
+
+	return migrate(ctx)
+}
+
 func (db *DB) Migrate(ctx context.Context) error {
+	return db.withMigrationLock(ctx, db.migrate)
+}
+
+func (db *DB) migrate(ctx context.Context) error {
 	entries, err := migrationsFS.ReadDir("migrations")
 	if err != nil {
 		return fmt.Errorf("read migrations: %w", err)
