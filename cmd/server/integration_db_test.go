@@ -352,6 +352,35 @@ func TestAnUnconfiguredAdapterIsUnavailableRatherThanEmpty(t *testing.T) {
 		strings.Contains(body, "127.0.0.1") {
 		t.Errorf("the failure discloses internal detail: %s", body)
 	}
+
+	// Both answers must be machine-readable. The error contract tells a caller
+	// to branch on code rather than on the human-readable summary, and a
+	// deployment that deliberately leaves an integration out is the condition a
+	// caller is most likely to meet. Without a code the only honest thing a
+	// client can render is "something went wrong", which reports a supported
+	// configuration as a fault.
+	for name, recorder := range map[string]*httptest.ResponseRecorder{
+		"collection": collection,
+		"detail":     detail,
+	} {
+		var failure struct {
+			Error  string `json:"error"`
+			Code   string `json:"code"`
+			Source string `json:"source"`
+		}
+		if err := json.Unmarshal(recorder.Body.Bytes(), &failure); err != nil {
+			t.Fatalf("%s: the failure is not the platform's error shape: %v", name, err)
+		}
+		if failure.Code != "adapter_not_configured" {
+			t.Errorf("%s: code is %q, want adapter_not_configured", name, failure.Code)
+		}
+		if failure.Source != "espocrm" {
+			t.Errorf("%s: source is %q, want espocrm — a caller must be able to say which integration is missing", name, failure.Source)
+		}
+		if failure.Error == "" {
+			t.Errorf("%s: the failure carries no human-readable summary", name)
+		}
+	}
 }
 
 // An identity is created once and keeps its Global ID. Two requests from the
