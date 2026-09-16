@@ -320,9 +320,29 @@ func applyPoolLimits(config *pgxpool.Config) {
 	}
 }
 
+// maxPoolConns is the largest pool this will configure.
+//
+// PostgreSQL's own default max_connections is 100, shared across every client.
+// A pool above this is a misconfiguration rather than a tuning choice, and
+// honouring it would let one service exhaust the server for everyone.
+const maxPoolConns = 500
+
+// intFromEnv reads a bounded pool size.
+//
+// The bound is not decoration. strconv.Atoi returns a platform-width int, and
+// converting that to the int32 pgx wants will silently wrap: a value of three
+// billion becomes a negative connection count, which is not a large pool or a
+// rejected one but an undefined one. An out-of-range value is refused in
+// favour of the default, and says so, because a deployment that asked for
+// something impossible should find out rather than run with a number nobody
+// chose.
 func intFromEnv(name string, fallback int32) int32 {
-	value, err := strconv.Atoi(strings.TrimSpace(os.Getenv(name)))
-	if err != nil || value <= 0 {
+	raw := strings.TrimSpace(os.Getenv(name))
+	if raw == "" {
+		return fallback
+	}
+	value, err := strconv.Atoi(raw)
+	if err != nil || value <= 0 || value > maxPoolConns {
 		return fallback
 	}
 	return int32(value)

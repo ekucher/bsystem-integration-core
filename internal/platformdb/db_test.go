@@ -133,3 +133,36 @@ func TestPersistenceLifecycle(t *testing.T) {
 		t.Fatal("expected at least one audit event")
 	}
 }
+
+// A pool size that cannot fit in the width pgx uses must not wrap. Three
+// billion converted to int32 is a negative connection count: not a large
+// pool, not a refused one, but an undefined one.
+func TestPoolSizeIsBounded(t *testing.T) {
+	const fallback int32 = 20
+	cases := map[string]struct {
+		value string
+		want  int32
+	}{
+		"unset":           {"", fallback},
+		"a sane value":    {"40", 40},
+		"the maximum":     {"500", 500},
+		"above the max":   {"501", fallback},
+		"far above":       {"3000000000", fallback},
+		"overflows int32": {"2147483648", fallback},
+		"negative":        {"-1", fallback},
+		"zero":            {"0", fallback},
+		"not a number":    {"lots", fallback},
+	}
+	for name, c := range cases {
+		t.Run(name, func(t *testing.T) {
+			t.Setenv("BSYSTEM_TEST_POOL", c.value)
+			got := intFromEnv("BSYSTEM_TEST_POOL", fallback)
+			if got != c.want {
+				t.Errorf("intFromEnv(%q) = %d, want %d", c.value, got, c.want)
+			}
+			if got <= 0 {
+				t.Errorf("intFromEnv(%q) = %d, which is not a usable pool size", c.value, got)
+			}
+		})
+	}
+}
