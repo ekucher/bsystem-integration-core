@@ -16,6 +16,37 @@ The evaluator denies by default. A request is allowed only when a rule says
 so, and an evaluation that cannot be completed — an unavailable scope store —
 is an error, never an allow.
 
+## Roles and groups
+
+Groups originate in authentik and arrive as an OIDC claim. The platform maps
+them to roles, and roles to permissions. Nothing is read from the token except
+the group names: what a group *means* is the platform's decision, recorded in
+migrations, not the identity provider's.
+
+| authentik group | Role | Permissions |
+| --- | --- | --- |
+| `BSYSTEM-Admins` | Administrator | `*` |
+| `BSYSTEM-Managers` | Manager | `crm.client.read`, `projects.task.read`, `qa.report.read`, `wiki.document.read`, `operations.server.read`, `support.incident.read` |
+| `BSYSTEM-Developers` | Developer | `projects.task.read`, `projects.task.edit`, `development.repo.read`, `development.pr.write`, `qa.testcase.read`, `wiki.document.read`, `wiki.document.edit`, `operations.server.read` |
+| `BSYSTEM-QA` | QA | `projects.task.read`, `qa.testcase.read`, `qa.testcase.execute`, `qa.bug.write`, `wiki.document.read` |
+| `BSYSTEM-Support` | Support | `crm.client.read`, `projects.task.read`, `wiki.document.read`, `operations.server.read`, `support.incident.read`, `support.incident.write` |
+| `BSYSTEM-DevOps` | DevOps | `development.repo.read`, `wiki.document.read`, `wiki.document.edit`, `operations.server.read`, `operations.server.manage` |
+| `BSYSTEM-Customers` | Customer | `portal.read`, `wiki.document.read`, `support.incident.read` — **scope-confined** |
+| `BSYSTEM-Services` | Service Core | `adapters.read`, `events.publish`, `global_ids.read`, `notifications.publish`, `operations.report`, `search.index` |
+
+Two permissions are held by **no role**: `ai.query`, because who may spend
+money on a model and whose data may be put in front of one is an owner
+decision; and `operations.server.manage` is held only by DevOps. An
+administrator reaches everything through the wildcard.
+
+Human and service roles are separate `kind`s and are resolved separately, so a
+human token can never pick up a service permission by being in the wrong
+group.
+
+The table above is maintained in `internal/platformdb/migrations/003` and
+later migrations. Where this document and a migration disagree, the migration
+is what runs.
+
 ## Decision order
 
 1. An empty required permission allows any authenticated caller. Only

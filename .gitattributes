@@ -1,0 +1,26 @@
+# Line endings are normalized to LF in the repository.
+#
+# This is not a style preference. A shell script or a Dockerfile checked in
+# with CRLF fails inside a container with an error that names neither the file
+# nor the reason — the shebang line ends in an invisible carriage return and
+# the interpreter is reported as not found.
+* text=auto eol=lf
+
+*.sh text eol=lf
+*.py text eol=lf
+Dockerfile text eol=lf
+*.yml text eol=lf
+*.yaml text eol=lf
+
+# Binary files must not be normalized.
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.gif binary
+*.ico binary
+*.woff binary
+*.woff2 binary
+*.pdf binary
+
+# go.sum is generated and is verified by the build rather than read.
+go.sum linguist-generated=true -diff
