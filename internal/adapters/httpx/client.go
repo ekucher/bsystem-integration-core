@@ -159,7 +159,8 @@ func (c *Client) BreakerStats() Stats { return c.breaker.Stats() }
 // non-nil. It retries only idempotent requests, only for failures that could
 // plausibly succeed on another attempt, and only within the policy's bounds.
 func (c *Client) Do(ctx context.Context, request Request, out any) error {
-	if !c.breaker.Allow() {
+	admitted, ticket := c.breaker.Allow()
+	if !admitted {
 		if c.recorder != nil {
 			c.recorder.CircuitRejected(c.adapter)
 		}
@@ -178,7 +179,7 @@ func (c *Client) Do(ctx context.Context, request Request, out any) error {
 		c.record(err, attempt > 1, time.Since(started))
 
 		if err == nil {
-			c.breaker.Succeed()
+			c.breaker.Succeed(ticket)
 			return nil
 		}
 		lastErr = err
@@ -187,19 +188,19 @@ func (c *Client) Do(ctx context.Context, request Request, out any) error {
 		if !errors.As(err, &upstream) || !upstream.retryable() {
 			// A deterministic failure says nothing about availability, so it
 			// must not count towards opening the circuit.
-			c.breaker.Fail(false)
+			c.breaker.Fail(ticket, false)
 			return err
 		}
 		if attempt == attempts {
 			break
 		}
 		if waitErr := c.retry.sleep(ctx, c.backoff(attempt, upstream.RetryAfter)); waitErr != nil {
-			c.breaker.Fail(true)
+			c.breaker.Fail(ticket, true)
 			return &Error{Adapter: c.adapter, Kind: KindCanceled, cause: waitErr}
 		}
 	}
 
-	c.breaker.Fail(true)
+	c.breaker.Fail(ticket, true)
 	return lastErr
 }
 
