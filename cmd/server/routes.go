@@ -67,6 +67,12 @@ func routes() []route {
 		{Method: http.MethodGet, Path: "/api/v1/documents/{id}", Auth: authHuman, Permission: "wiki.document.read", ResourceScope: authz.ScopeResource, Handler: func(a *app) http.HandlerFunc { return a.getDocument }},
 		{Method: http.MethodPost, Path: "/api/v1/global-ids", Auth: authHuman, Permission: "*", Handler: func(a *app) http.HandlerFunc { return a.createGlobalID }},
 		{Method: http.MethodGet, Path: "/api/v1/global-ids/{id}", Auth: authHuman, Permission: "*", Handler: func(a *app) http.HandlerFunc { return a.resolveGlobalID }},
+		// Notifications carry no route permission: what a caller may read is
+		// decided per notification from their own audience, so a permission
+		// here would either be too broad to mean anything or would hide
+		// notifications addressed to them by name.
+		{Method: http.MethodGet, Path: "/api/v1/notifications", Auth: authHuman, Handler: func(a *app) http.HandlerFunc { return a.listNotifications }},
+		{Method: http.MethodPost, Path: "/api/v1/notifications/{id}/read", Auth: authHuman, Handler: func(a *app) http.HandlerFunc { return a.markNotificationRead }},
 		{Method: http.MethodGet, Path: "/api/v1/audit", Auth: authHuman, Permission: "*", Handler: func(a *app) http.HandlerFunc { return a.auditEvents }},
 		{Method: http.MethodGet, Path: "/api/v1/admin/rbac/roles", Auth: authHuman, Permission: "*", Handler: func(a *app) http.HandlerFunc { return a.adminRoles }},
 		{Method: http.MethodGet, Path: "/api/v1/admin/rbac/scopes", Auth: authHuman, Permission: "*", Handler: func(a *app) http.HandlerFunc { return a.adminListScopes }},
@@ -79,6 +85,7 @@ func routes() []route {
 		{Method: http.MethodGet, Path: "/api/service/v1/adapters", Auth: authService, Permission: "adapters.read", Handler: func(a *app) http.HandlerFunc { return a.serviceAdapters }},
 		{Method: http.MethodGet, Path: "/api/service/v1/adapters/health", Auth: authService, Permission: "adapters.read", Handler: func(a *app) http.HandlerFunc { return a.serviceAdapterHealth }},
 		{Method: http.MethodPost, Path: "/api/service/v1/events", Auth: authService, Permission: "events.publish", Handler: func(a *app) http.HandlerFunc { return a.servicePublishEvent }},
+		{Method: http.MethodPost, Path: "/api/service/v1/notifications", Auth: authService, Permission: "notifications.publish", Handler: func(a *app) http.HandlerFunc { return a.servicePublishNotification }},
 	}
 }
 

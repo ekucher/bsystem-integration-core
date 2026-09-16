@@ -215,5 +215,15 @@ func (a *app) servicePublishEvent(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	a.publish(events.Subject(envelope.Event), envelope)
+	// The notification is raised after the event is on the bus, and its
+	// failure does not fail the request: the event has already been accepted
+	// and delivered, and refusing it now would lose it to make a secondary
+	// effect look atomic.
+	a.notifyFromEvent(r, notificationSourceEvent{
+		Event: envelope.Event, Source: envelope.Source, Severity: envelope.Severity,
+		EntityID: envelope.EntityID, TenantID: envelope.TenantID,
+		RequestID: envelope.RequestID, OccurredAt: envelope.OccurredAt,
+		Body: eventBody(envelope.Data),
+	})
 	writeJSON(w, http.StatusAccepted, envelope)
 }

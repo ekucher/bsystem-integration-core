@@ -45,6 +45,12 @@ tags:
     description: Normalized entities sourced from the authoritative systems.
   - name: Global IDs
     description: Immutable platform identifiers for upstream records.
+  - name: Notifications
+    description: |
+      Platform notifications and their per-user read state. A notification is
+      addressed either to one Global user ID or to a permission; who satisfies
+      a permission is resolved from RBAC when the notification is read, not
+      when it is raised.
   - name: Administration
     description: Audit trail and RBAC administration. Administrator only.
   - name: Service
@@ -524,6 +530,80 @@ paths:
         '404': {$ref: '#/components/responses/NotFound'}
         '503': {$ref: '#/components/responses/DependencyUnavailable'}
 
+  /api/v1/notifications:
+    get:
+      tags: [Notifications]
+      operationId: listNotifications
+      summary: List the caller's notifications
+      description: |
+        Returns notifications addressed to the caller, newest first.
+
+        A notification is visible when it names the caller's Global user ID,
+        or when it is addressed to a permission the caller holds. An
+        administrator sees every audience. A scope-confined principal — the
+        Customer role today — sees only notifications addressed to it by name:
+        its role permissions describe what it may do inside scopes it has been
+        granted, so treating them as an audience would disclose platform-wide
+        notifications across the tenant boundary.
+
+        The route declares no permission because the audience filter is
+        applied in the query against the same principal the rest of the
+        platform authorizes: a route permission could only be broader than
+        that filter, never narrower.
+
+        `total` and `unread_count` describe everything visible to the caller,
+        not the current page, so an unread badge does not have to walk the
+        whole history to draw a number.
+      parameters:
+        - {$ref: '#/components/parameters/Limit'}
+        - {$ref: '#/components/parameters/Cursor'}
+        - name: unread
+          in: query
+          required: false
+          description: When `true`, returns only notifications the caller has not marked read.
+          schema: {type: boolean, default: false}
+      responses:
+        '200':
+          description: The caller's notifications.
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/NotificationCollection'}
+              example:
+                data:
+                  - {id: 91, event: backup.failed, source: operations, severity: critical, title: Backup failed, body: 'nightly backup exited 1', entity_id: SRV-000004, audience_permission: operations.server.read, correlation_id: 4f1c2a, occurred_at: '2026-01-06T02:14:00Z', read: false}
+                pagination: {total: 3, limit: 1, next_cursor: bjo5MQ}
+                unread_count: 2
+        '400': {$ref: '#/components/responses/BadRequest'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '503': {$ref: '#/components/responses/DependencyUnavailable'}
+
+  /api/v1/notifications/{id}/read:
+    post:
+      tags: [Notifications]
+      operationId: markNotificationRead
+      summary: Mark a notification read
+      description: |
+        Records that the caller has read a notification. Read state is per
+        user, so marking an audience notification read does not hide it from
+        anyone else.
+
+        A notification the caller may not see is answered exactly as one that
+        does not exist. Distinguishing them would let a caller enumerate
+        notification identifiers belonging to other people.
+
+        The call is idempotent: marking an already-read notification succeeds.
+      parameters:
+        - name: id
+          in: path
+          required: true
+          description: The notification's identifier.
+          schema: {type: integer, format: int64, minimum: 1}
+      responses:
+        '204': {description: The notification is marked read.}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '503': {$ref: '#/components/responses/DependencyUnavailable'}
+
   /api/v1/audit:
     get:
       tags: [Administration]
@@ -748,6 +828,48 @@ paths:
             application/json:
               schema: {$ref: '#/components/schemas/Error'}
 
+  /api/service/v1/notifications:
+    post:
+      tags: [Service]
+      operationId: publishNotification
+      summary: Raise a notification
+      description: |
+        Raises a notification directly, for a publisher that already knows who
+        it concerns. Requires the `notifications.publish` permission, which no
+        human role holds: a notification is the platform stating that
+        something happened, not a message one user sends another.
+
+        Exactly one of `recipient_id` and `audience_permission` must be set.
+        Both are validated before the notification is stored — an unknown
+        Global user ID or an undefined permission is refused rather than
+        accepted, because a notification nobody can read is not a
+        notification, and reporting success for one would be a lie.
+
+        `severity` is a floor of `info`: a publisher may escalate but the
+        platform never records less than it knows.
+
+        Most notifications are not raised this way. A mapped platform event
+        published to `/api/service/v1/events` raises one automatically; see
+        `docs/NOTIFICATIONS.md` for the mapping table.
+      security:
+        - serviceAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/NotificationRequest'}
+            example: {audience_permission: operations.server.read, severity: critical, title: Backup failed, body: 'nightly backup exited 1', entity_id: SRV-000004, source: operations}
+      responses:
+        '201':
+          description: The notification was raised.
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Notification'}
+        '400': {$ref: '#/components/responses/BadRequest'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '403': {$ref: '#/components/responses/ServiceForbidden'}
+        '503': {$ref: '#/components/responses/DependencyUnavailable'}
+
 components:
   securitySchemes:
     bearerAuth:
@@ -895,6 +1017,92 @@ components:
             is exhausted.
       examples:
         - {total: 42, limit: 50, next_cursor: bzo1MA}
+
+    NotificationCollection:
+      type: object
+      description: |
+        A page of notifications, with the counts of everything visible to the
+        caller rather than of the page.
+      required: [data, pagination, unread_count]
+      properties:
+        data:
+          type: array
+          items: {$ref: '#/components/schemas/Notification'}
+        pagination: {$ref: '#/components/schemas/Pagination'}
+        unread_count:
+          type: integer
+          description: Notifications visible to the caller that they have not marked read.
+
+    Notification:
+      type: object
+      required: [id, event, source, severity, title, occurred_at, read]
+      properties:
+        id: {type: integer, format: int64}
+        event:
+          type: string
+          description: The platform event that raised it, in `entity.action` form.
+        source: {type: string}
+        severity:
+          type: string
+          enum: [debug, info, warning, error, critical]
+        title: {type: string}
+        body:
+          type: string
+          description: |
+            Human-readable detail. When a notification is raised from an
+            event, only the event's `data.message` is carried: copying a whole
+            upstream payload would place potentially confidential data in
+            front of everyone holding the audience permission.
+        deep_link:
+          type: string
+          description: |
+            A HUB path for the entity, or absent when the HUB has no page for
+            it. Operational and support entities have none until those areas
+            of the HUB exist; an absent link is better than one that leads
+            nowhere.
+        entity_id:
+          type: string
+          description: The Global ID the notification concerns.
+        tenant_id: {type: string}
+        recipient_id:
+          type: string
+          description: The Global user ID this notification names, when it addresses one person.
+        audience_permission:
+          type: string
+          description: |
+            The permission this notification addresses, when it addresses a
+            role rather than a person. Membership is resolved from RBAC at
+            read time, so revoking access also withdraws the notification.
+        correlation_id:
+          type: string
+          description: The `X-Request-ID` of the request that raised it.
+        occurred_at: {type: string, format: date-time}
+        read:
+          type: boolean
+          description: Whether this caller has marked it read. Read state is per user.
+
+    NotificationRequest:
+      type: object
+      required: [title, source]
+      properties:
+        recipient_id:
+          type: string
+          description: A known Global user ID. Mutually exclusive with `audience_permission`.
+        audience_permission:
+          type: string
+          description: A permission defined in RBAC. Mutually exclusive with `recipient_id`.
+        severity:
+          type: string
+          enum: [debug, info, warning, error, critical]
+          default: info
+        title: {type: string}
+        body: {type: string}
+        entity_id: {type: string}
+        tenant_id: {type: string}
+        source: {type: string}
+        event:
+          type: string
+          description: Defaults to `notification.raised` when the publisher names none.
 
     Error:
       type: object

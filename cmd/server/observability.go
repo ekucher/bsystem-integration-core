@@ -140,6 +140,15 @@ var eventsPublished = metricsRegistry.Counter(
 	"event", "outcome",
 )
 
+// notificationsRaised counts notifications the platform raised from events,
+// by outcome. A mapped event that silently fails to become a notification is
+// a message nobody receives, which looks identical to a quiet week.
+var notificationsRaised = metricsRegistry.Counter(
+	"bsystem_notifications_raised_total",
+	"Notifications raised from platform events, by event and outcome.",
+	"event", "outcome",
+)
+
 var logger = observability.NewLogger(os.Stdout, observability.LevelFromEnv(os.Getenv("LOG_LEVEL")))
 
 // observer wires request logging and metrics onto each route.

@@ -29,15 +29,21 @@ func TestRoutePermissionsAreCoherent(t *testing.T) {
 // permission would be readable by any authenticated principal, including one
 // whose groups map to no role at all.
 func TestDataRoutesRequireAPermission(t *testing.T) {
-	// /me and /modules intentionally require none: both return only what the
-	// caller's own access already is, filtered to it.
-	selfDescribing := map[string]bool{
-		"GET /api/v1/me":             true,
-		"GET /api/v1/modules":        true,
-		"GET /api/service/v1/whoami": true,
+	// These routes intentionally require none, because each one returns only
+	// what the caller's own access already entitles them to and is filtered
+	// to it before anything is rendered. /me, /modules and /whoami describe
+	// the caller. The notification routes resolve the caller's audience from
+	// the same principal and apply it in the query itself, so a route
+	// permission could only be broader than that filter, never narrower.
+	perCallerFiltered := map[string]bool{
+		"GET /api/v1/me":                       true,
+		"GET /api/v1/modules":                  true,
+		"GET /api/service/v1/whoami":           true,
+		"GET /api/v1/notifications":            true,
+		"POST /api/v1/notifications/{id}/read": true,
 	}
 	for _, route := range routes() {
-		if route.Auth == authNone || selfDescribing[route.Pattern()] {
+		if route.Auth == authNone || perCallerFiltered[route.Pattern()] {
 			continue
 		}
 		if route.Permission == "" {
