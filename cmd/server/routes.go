@@ -67,6 +67,11 @@ func routes() []route {
 		{Method: http.MethodGet, Path: "/api/v1/documents/{id}", Auth: authHuman, Permission: "wiki.document.read", ResourceScope: authz.ScopeResource, Handler: func(a *app) http.HandlerFunc { return a.getDocument }},
 		{Method: http.MethodPost, Path: "/api/v1/global-ids", Auth: authHuman, Permission: "*", Handler: func(a *app) http.HandlerFunc { return a.createGlobalID }},
 		{Method: http.MethodGet, Path: "/api/v1/global-ids/{id}", Auth: authHuman, Permission: "*", Handler: func(a *app) http.HandlerFunc { return a.resolveGlobalID }},
+		// Search carries no route permission: what a caller may see is decided
+		// per document, and a route permission could only be broader than
+		// that filter. See cmd/server/search.go.
+		{Method: http.MethodGet, Path: "/api/v1/search", Auth: authHuman, Handler: func(a *app) http.HandlerFunc { return a.search }},
+
 		// Notifications carry no route permission: what a caller may read is
 		// decided per notification from their own audience, so a permission
 		// here would either be too broad to mean anything or would hide
@@ -86,6 +91,8 @@ func routes() []route {
 		{Method: http.MethodGet, Path: "/api/service/v1/adapters/health", Auth: authService, Permission: "adapters.read", Handler: func(a *app) http.HandlerFunc { return a.serviceAdapterHealth }},
 		{Method: http.MethodPost, Path: "/api/service/v1/events", Auth: authService, Permission: "events.publish", Handler: func(a *app) http.HandlerFunc { return a.servicePublishEvent }},
 		{Method: http.MethodPost, Path: "/api/service/v1/notifications", Auth: authService, Permission: "notifications.publish", Handler: func(a *app) http.HandlerFunc { return a.servicePublishNotification }},
+		{Method: http.MethodPost, Path: "/api/service/v1/search/documents", Auth: authService, Permission: "search.index", Handler: func(a *app) http.HandlerFunc { return a.serviceIndexSearchDocuments }},
+		{Method: http.MethodDelete, Path: "/api/service/v1/search/documents/{id}", Auth: authService, Permission: "search.index", Handler: func(a *app) http.HandlerFunc { return a.serviceDeleteSearchDocument }},
 	}
 }
 

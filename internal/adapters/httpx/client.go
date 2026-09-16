@@ -242,12 +242,13 @@ func (c *Client) backoff(attempt int, retryAfter time.Duration) time.Duration {
 
 func (c *Client) attempt(ctx context.Context, request Request, out any) error {
 	var body io.Reader
+	contentType := "application/json"
 	if request.Body != nil {
-		encoded, err := json.Marshal(request.Body)
+		encoded, encodedType, err := encodeBody(request.Body)
 		if err != nil {
 			return &Error{Adapter: c.adapter, Kind: KindDecode, cause: err}
 		}
-		body = bytes.NewReader(encoded)
+		body, contentType = bytes.NewReader(encoded), encodedType
 	}
 
 	target := *c.baseURL
@@ -262,7 +263,7 @@ func (c *Client) attempt(ctx context.Context, request Request, out any) error {
 	}
 	httpRequest.Header.Set("Accept", "application/json")
 	if request.Body != nil {
-		httpRequest.Header.Set("Content-Type", "application/json")
+		httpRequest.Header.Set("Content-Type", contentType)
 	}
 	for name, values := range request.Header {
 		for _, value := range values {
@@ -399,4 +400,32 @@ func OptionsFor(adapter string, config adapters.Config) Options {
 		options.Breaker.OpenFor = config.CircuitOpenFor
 	}
 	return options
+}
+
+// NDJSON marks a body that must be sent as newline-delimited JSON — one
+// object per line, with a trailing newline — rather than as a single
+// document. Bulk APIs, OpenSearch's among them, require that framing and
+// reject a JSON array.
+//
+// It is a distinct type rather than a flag on Request so that a caller cannot
+// set the framing without also supplying the lines it applies to.
+type NDJSON []any
+
+// encodeBody renders a request body and reports the content type it needs.
+func encodeBody(body any) ([]byte, string, error) {
+	lines, isNDJSON := body.(NDJSON)
+	if !isNDJSON {
+		encoded, err := json.Marshal(body)
+		return encoded, "application/json", err
+	}
+	var buffer bytes.Buffer
+	for _, line := range lines {
+		encoded, err := json.Marshal(line)
+		if err != nil {
+			return nil, "", err
+		}
+		buffer.Write(encoded)
+		buffer.WriteByte('\n')
+	}
+	return buffer.Bytes(), "application/x-ndjson", nil
 }

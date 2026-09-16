@@ -14,6 +14,7 @@ import (
 
 	"github.com/ekucher/bsystem-integration-core/internal/authz"
 	"github.com/ekucher/bsystem-integration-core/internal/platformdb"
+	"github.com/ekucher/bsystem-integration-core/internal/search"
 	"github.com/nats-io/nats.go"
 )
 
@@ -68,6 +69,10 @@ type app struct {
 	db    *platformdb.DB
 	nc    *nats.Conn
 	authz *authz.Evaluator
+	// searchProvider is the search engine. It is always non-nil: the
+	// in-memory provider is the default, so search answers honestly with an
+	// empty index rather than failing as unconfigured.
+	searchProvider search.Provider
 }
 
 // accessFrom returns the resolved access of the human caller.
@@ -418,7 +423,7 @@ func main() {
 			defer nc.Close()
 		}
 	}
-	a := &app{db: db, nc: nc, authz: authz.New(db, authz.DefaultConfinedRoles())}
+	a := &app{db: db, nc: nc, authz: authz.New(db, authz.DefaultConfinedRoles()), searchProvider: searchProvider()}
 	a.registerPlatformMetrics()
 
 	addr := os.Getenv("HTTP_ADDR")

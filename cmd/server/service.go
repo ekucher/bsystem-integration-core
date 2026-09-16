@@ -16,6 +16,7 @@ import (
 	"github.com/ekucher/bsystem-integration-core/internal/authz"
 	"github.com/ekucher/bsystem-integration-core/internal/events"
 	"github.com/ekucher/bsystem-integration-core/internal/platformdb"
+	"github.com/ekucher/bsystem-integration-core/internal/search"
 )
 
 type servicePrincipal struct {
@@ -226,4 +227,28 @@ func (a *app) servicePublishEvent(w http.ResponseWriter, r *http.Request) {
 		Body: eventBody(envelope.Data),
 	})
 	writeJSON(w, http.StatusAccepted, envelope)
+}
+
+// searchProvider builds the platform's search engine from the environment.
+//
+// OpenSearch is used when a cluster is configured; otherwise the in-memory
+// provider is, so search is always answerable. That default is a deliberate
+// choice over failing as unconfigured: an empty index truthfully returns
+// nothing, while an unconfigured endpoint would make every caller handle a
+// dependency that the platform can perfectly well stand in for. The
+// distinction that must never blur is between an empty index and an engine
+// that could not be reached, and those stay distinct — a provider failure is
+// reported as a failure.
+func searchProvider() search.Provider {
+	config := adapterResilience()
+	config.BaseURL = strings.TrimSpace(os.Getenv("OPENSEARCH_URL"))
+	if config.BaseURL == "" {
+		return search.NewMemory()
+	}
+	provider, err := search.NewOpenSearch(config, os.Getenv("OPENSEARCH_INDEX"))
+	if err != nil {
+		logger.Warn("search provider disabled", "provider", "opensearch", "error", err.Error())
+		return search.NewMemory()
+	}
+	return provider
 }

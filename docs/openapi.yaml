@@ -45,6 +45,10 @@ tags:
     description: Normalized entities sourced from the authoritative systems.
   - name: Global IDs
     description: Immutable platform identifiers for upstream records.
+  - name: Search
+    description: |
+      Cross-module search over normalized entities. Results are filtered to
+      what the caller may read, per document, before anything is returned.
   - name: Notifications
     description: |
       Platform notifications and their per-user read state. A notification is
@@ -530,6 +534,88 @@ paths:
         '404': {$ref: '#/components/responses/NotFound'}
         '503': {$ref: '#/components/responses/DependencyUnavailable'}
 
+  /api/v1/search:
+    get:
+      tags: [Search]
+      operationId: search
+      summary: Search normalized entities
+      description: |
+        Searches clients, contacts, projects, issues and documents at once.
+
+        Every result is authorized individually before it is returned. A
+        document declares the permissions that grant read access — any one is
+        enough — and the scope a grant would be written against, and both are
+        evaluated against the caller by the same rules the rest of the
+        platform uses. A scope-confined principal therefore sees a result only
+        where an explicit grant reaches it.
+
+        The route declares no permission, because the decision is per document
+        and a route permission could only be broader than that filter.
+
+        A query shorter than two characters is refused rather than run: one
+        character matches most of an index, and the result would read as a
+        listing rather than a search. An unknown `type` is refused rather than
+        ignored, because dropping it would answer a broader question than the
+        caller asked.
+
+        **There is no total.** The provider knows how many documents matched
+        before authorization was applied, and that number counts records the
+        caller may not be allowed to know exist. A page shorter than `limit`
+        may still carry a `next_cursor` for the same reason: candidates are
+        removed after the provider has counted them.
+
+        A provider failure is a 503, never an empty result. A user told that
+        their search found nothing will act on it.
+      parameters:
+        - name: q
+          in: query
+          required: true
+          description: The search text. At least two characters.
+          schema: {type: string, minLength: 2}
+          example: northwind
+        - name: type
+          in: query
+          required: false
+          description: |
+            Restrict to entity types. Repeat the parameter for several. Omit
+            for every type.
+          schema:
+            type: array
+            items: {type: string, enum: [client, contact, project, issue, document]}
+        - name: limit
+          in: query
+          required: false
+          description: Maximum results to return. Above the maximum is clamped, not refused.
+          schema: {type: integer, minimum: 1, maximum: 50, default: 20}
+        - {$ref: '#/components/parameters/Cursor'}
+      responses:
+        '200':
+          description: Results the caller is authorized to see.
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/SearchCollection'}
+              example:
+                data:
+                  - {id: CL-000001, type: client, title: Northwind Trading, summary: 'Key account', source: espocrm, permissions: [crm.client.read], scope_type: client, scope_id: CL-000001, updated_at: '2026-01-06T09:00:00Z', score: 4}
+                pagination: {limit: 1, next_cursor: czoy}
+        '400':
+          description: |
+            The query is too short, the cursor was not issued by this
+            platform, or an unknown entity type was requested.
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Error'}
+              example: {error: 'unknown entity type: server', code: invalid_type}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '503':
+          description: |
+            The search provider could not be reached, or the authorization
+            store could not answer. Never rendered as an empty result.
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Error'}
+              example: {error: search provider unavailable, code: search_unavailable}
+
   /api/v1/notifications:
     get:
       tags: [Notifications]
@@ -870,6 +956,84 @@ paths:
         '403': {$ref: '#/components/responses/ServiceForbidden'}
         '503': {$ref: '#/components/responses/DependencyUnavailable'}
 
+  /api/service/v1/search/documents:
+    post:
+      tags: [Service]
+      operationId: indexSearchDocuments
+      summary: Index or update search documents
+      description: |
+        Upserts normalized search documents, keyed by Global ID, so replaying
+        a request converges rather than duplicating. Requires `search.index`,
+        which no human role holds.
+
+        A document carries no upstream payload: `title` and `summary` are the
+        only text, and both must be safe to show to anyone who passes the
+        document's own authorization. A search index is read by more people
+        than any single endpoint, and copying a source record into it would
+        put upstream fields in front of all of them.
+
+        `permissions` must name at least one permission and `scope_type` and
+        `scope_id` must name the scope a grant would be written against. A
+        document with no permissions is refused rather than stored: it would
+        be indexed and never returned, and the publisher should learn that now
+        rather than when somebody reports results missing.
+
+        The whole batch is rejected when any document is invalid, so the index
+        is never left half-applied.
+      security:
+        - serviceAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [documents]
+              properties:
+                documents:
+                  type: array
+                  minItems: 1
+                  items: {$ref: '#/components/schemas/SearchDocument'}
+            example:
+              documents:
+                - {id: CL-000001, type: client, title: Northwind Trading, summary: 'Key account', source: espocrm, permissions: [crm.client.read], scope_type: client, scope_id: CL-000001, updated_at: '2026-01-06T09:00:00Z'}
+      responses:
+        '202':
+          description: The documents were accepted.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  indexed: {type: integer}
+              example: {indexed: 1}
+        '400': {$ref: '#/components/responses/BadRequest'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '403': {$ref: '#/components/responses/ServiceForbidden'}
+        '503': {$ref: '#/components/responses/DependencyUnavailable'}
+
+  /api/service/v1/search/documents/{id}:
+    delete:
+      tags: [Service]
+      operationId: deleteSearchDocument
+      summary: Remove a search document
+      description: |
+        Removes a document from the index. Requires `search.index`.
+
+        Removing a document that was never indexed succeeds. The caller's
+        intent — that this should not be searchable — is satisfied either way,
+        and answering 404 would make a replayed delete look like a failure.
+      security:
+        - serviceAuth: []
+      parameters:
+        - {$ref: '#/components/parameters/GlobalID'}
+      responses:
+        '204': {description: The document is not in the index.}
+        '400': {$ref: '#/components/responses/BadRequest'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '403': {$ref: '#/components/responses/ServiceForbidden'}
+        '503': {$ref: '#/components/responses/DependencyUnavailable'}
+
 components:
   securitySchemes:
     bearerAuth:
@@ -1017,6 +1181,79 @@ components:
             is exhausted.
       examples:
         - {total: 42, limit: 50, next_cursor: bzo1MA}
+
+    SearchCollection:
+      type: object
+      description: |
+        A page of search results. It carries no total: see the endpoint
+        description.
+      required: [data, pagination]
+      properties:
+        data:
+          type: array
+          items: {$ref: '#/components/schemas/SearchHit'}
+        pagination:
+          type: object
+          required: [limit]
+          properties:
+            limit:
+              type: integer
+              description: The number of results actually returned.
+            next_cursor:
+              type: string
+              description: |
+                Opaque position of the following page, absent once the results
+                are exhausted. It can be present on a page shorter than the
+                requested limit, because the authorization filter removes
+                candidates the provider has already counted.
+
+    SearchHit:
+      allOf:
+        - {$ref: '#/components/schemas/SearchDocument'}
+        - type: object
+          properties:
+            score:
+              type: number
+              description: |
+                The provider's relevance score. It is comparable within one
+                response and meaningless between responses or between
+                providers.
+
+    SearchDocument:
+      type: object
+      required: [id, type, title, source, permissions, scope_type, scope_id]
+      properties:
+        id:
+          type: string
+          description: The platform Global ID, which is also the index key.
+          example: CL-000001
+        type:
+          type: string
+          enum: [client, contact, project, issue, document]
+        title: {type: string}
+        summary:
+          type: string
+          description: |
+            Short human-readable detail. Along with the title, the only
+            searchable text, and the only content the index holds.
+        source: {type: string}
+        tenant_id: {type: string}
+        permissions:
+          type: array
+          minItems: 1
+          items: {type: string}
+          description: |
+            Permissions that grant read access; any one is enough. An empty
+            list is refused, because it would index a document nobody could
+            ever see.
+        scope_type:
+          type: string
+          enum: [global, tenant, client, project, resource]
+          description: |
+            The scope a grant would be written against, used when the caller's
+            role is scope-confined.
+        scope_id: {type: string}
+        updated_at: {type: string, format: date-time}
 
     NotificationCollection:
       type: object

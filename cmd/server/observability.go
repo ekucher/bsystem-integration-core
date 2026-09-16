@@ -149,6 +149,15 @@ var notificationsRaised = metricsRegistry.Counter(
 	"event", "outcome",
 )
 
+// searchIndexed counts index and delete operations by outcome. An indexing
+// pipeline that has silently stopped looks exactly like one with nothing to
+// do.
+var searchIndexed = metricsRegistry.Counter(
+	"bsystem_search_operations_total",
+	"Search index operations, by operation and outcome.",
+	"operation", "outcome",
+)
+
 var logger = observability.NewLogger(os.Stdout, observability.LevelFromEnv(os.Getenv("LOG_LEVEL")))
 
 // observer wires request logging and metrics onto each route.

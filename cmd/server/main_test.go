@@ -41,6 +41,7 @@ func TestDataRoutesRequireAPermission(t *testing.T) {
 		"GET /api/service/v1/whoami":           true,
 		"GET /api/v1/notifications":            true,
 		"POST /api/v1/notifications/{id}/read": true,
+		"GET /api/v1/search":                   true,
 	}
 	for _, route := range routes() {
 		if route.Auth == authNone || perCallerFiltered[route.Pattern()] {
