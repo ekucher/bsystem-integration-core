@@ -167,6 +167,15 @@ var operationsReported = metricsRegistry.Counter(
 	"event", "severity",
 )
 
+// aiRequests counts gateway calls by provider and outcome. A refusal is as
+// important to see as an answer: a rising refused_credential count means
+// somebody is repeatedly asking the platform to send secrets to a model.
+var aiRequests = metricsRegistry.Counter(
+	"bsystem_ai_requests_total",
+	"AI gateway requests, by provider and result.",
+	"provider", "result",
+)
+
 var logger = observability.NewLogger(os.Stdout, observability.LevelFromEnv(os.Getenv("LOG_LEVEL")))
 
 // observer wires request logging and metrics onto each route.

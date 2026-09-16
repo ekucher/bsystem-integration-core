@@ -45,6 +45,10 @@ tags:
     description: Normalized entities sourced from the authoritative systems.
   - name: Global IDs
     description: Immutable platform identifiers for upstream records.
+  - name: AI
+    description: |
+      The gateway to language models. AI is an authorized consumer of BSYSTEM
+      data, never a bypass around authorization.
   - name: Support
     description: |
       Incidents and requests, their lifecycle, and the SLA state derived from
@@ -542,6 +546,115 @@ paths:
         '401': {$ref: '#/components/responses/Unauthorized'}
         '403': {$ref: '#/components/responses/Forbidden'}
         '404': {$ref: '#/components/responses/NotFound'}
+        '503': {$ref: '#/components/responses/DependencyUnavailable'}
+
+  /api/v1/ai/ask:
+    post:
+      tags: [AI]
+      operationId: askAI
+      summary: Ask a question over authorized context
+      description: |
+        Requires `ai.query`, which no role holds by default: who may spend
+        money on a model, and whose data may be put in front of one, is an
+        owner decision rather than a technical default. Administrators reach
+        it through the wildcard.
+
+        **The caller names the records to use.** There is no search, no
+        inference and no "related records": a gateway that assembled its own
+        context would be deciding what a caller may see, and that decision
+        belongs to the authorization evaluator. Each named source is
+        authorized with exactly the permission and scope its own read endpoint
+        uses, so a question reaches the same answer as the same person reading
+        the record directly.
+
+        A source the caller may not use is **refused**, not dropped. Answering
+        from a smaller context would tell them the platform had considered
+        something it had not. An unresolvable source is refused identically,
+        so the gateway cannot be used to probe for identifiers.
+
+        Only normalized platform fields enter the prompt — a name, a status, a
+        severity. No upstream document body or description is ever loaded, and
+        an incident's summary is deliberately left out: those are the parts
+        most likely to contain something nobody decided to send to a model.
+
+        Everything that does go in is redacted, including the caller's own
+        question, because a user pasting a token into a prompt is the likeliest
+        way one reaches a model. Context classified `CREDENTIAL` is refused
+        outright rather than redacted.
+
+        A prompt sent to a provider has left the platform: it may be logged,
+        retained or used for training, which is outside BSYSTEM's control.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/AIRequest'}
+            example:
+              question: Which of these servers has an open incident?
+              sources:
+                - {entity_type: server, global_id: SRV-000001}
+                - {entity_type: incident, global_id: INC-000001}
+      responses:
+        '200':
+          description: The model's answer.
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/AIResponse'}
+        '400':
+          description: |
+            The question is missing or too large, too many sources were named,
+            or a source names an entity type the gateway does not accept.
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Error'}
+              example: {error: question is required}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '403':
+          description: |
+            The caller does not hold `ai.query`, may not use a named source,
+            or asked for context that is credential-classified.
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Error'}
+              example: {error: 'the requested context is credential-classified and cannot be sent to a model', code: credential_context}
+        '503':
+          description: The provider could not be reached, or context assembly failed.
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Error'}
+              example: {error: ai provider unavailable, code: ai_unavailable}
+
+  /api/v1/ai/audit:
+    get:
+      tags: [AI]
+      operationId: listAIRequests
+      summary: List audited AI requests
+      description: |
+        Administrator only. Every gateway call is recorded, answered or
+        refused.
+
+        **The prompt is not stored.** An audit trail is read by more people
+        than the request was, and storing the assembled context would
+        recreate, in one searchable table, exactly the aggregation the
+        authorization rules exist to prevent. What is recorded is who asked,
+        which records they named, what the platform sent it to, the
+        classification shape of the context, and the sizes — enough to answer
+        the questions an audit is for.
+      parameters:
+        - name: limit
+          in: query
+          required: false
+          schema: {type: integer, minimum: 1, maximum: 500, default: 100}
+      responses:
+        '200':
+          description: Audited AI requests, newest first.
+          content:
+            application/json:
+              schema:
+                type: array
+                items: {$ref: '#/components/schemas/AIAuditRecord'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '403': {$ref: '#/components/responses/Forbidden'}
         '503': {$ref: '#/components/responses/DependencyUnavailable'}
 
   /api/v1/incidents:
@@ -1627,6 +1740,81 @@ components:
       examples:
         - {total: 42, limit: 50, next_cursor: bzo1MA}
 
+    AISource:
+      type: object
+      required: [entity_type, global_id]
+      properties:
+        entity_type:
+          type: string
+          enum: [client, contact, project, task, document, server, incident]
+        global_id: {type: string}
+
+    AIRequest:
+      type: object
+      required: [question]
+      properties:
+        question:
+          type: string
+          maxLength: 4000
+          description: Redacted before it reaches a provider, like everything else.
+        sources:
+          type: array
+          maxItems: 20
+          items: {$ref: '#/components/schemas/AISource'}
+          description: |
+            The records the gateway may use. Each is authorized individually.
+            Omitting them asks a question with no platform context at all.
+
+    AIResponse:
+      type: object
+      required: [answer, provider, model, classification, used_sources]
+      properties:
+        answer: {type: string}
+        provider: {type: string, description: 'The provider that answered: fake, ollama or openai.'}
+        model: {type: string}
+        classification:
+          type: string
+          enum: [PUBLIC, INTERNAL, CONFIDENTIAL, SECRET]
+          description: |
+            The highest classification among the context used. `CREDENTIAL`
+            never appears: such a request is refused rather than answered.
+        used_sources:
+          type: array
+          items: {type: string}
+          description: The Global IDs that entered the prompt.
+        request_id: {type: string}
+
+    AIAuditRecord:
+      type: object
+      description: |
+        One audited gateway call. There is no prompt or answer text, by
+        design — see the endpoint description.
+      required: [id, occurred_at, actor_id, provider, model, result]
+      properties:
+        id: {type: integer, format: int64}
+        occurred_at: {type: string, format: date-time}
+        actor_id: {type: string, pattern: '^USR-[0-9]+$'}
+        provider: {type: string}
+        model: {type: string}
+        requested_sources:
+          type: array
+          items: {type: string}
+          description: What the caller asked for, as `entity_type:global_id`.
+        entity_ids:
+          type: array
+          items: {type: string}
+          description: What actually entered the prompt.
+        classification:
+          type: object
+          description: The overall level and a count per level. Never content.
+        request_id: {type: string}
+        result:
+          type: string
+          enum: [answered, refused_credential, refused_unauthorized, refused_too_large, failed]
+        prompt_bytes: {type: integer}
+        answer_bytes: {type: integer}
+        duration_ms: {type: integer}
+
     SupportStatus:
       type: string
       enum: [new, acknowledged, in_progress, resolved, closed]
@@ -2034,6 +2222,15 @@ components:
             value outside its vocabulary.
             `invalid_transition` — a status change the support lifecycle does
             not allow.
+            `invalid_source` — an AI source names an entity type the gateway
+            does not accept.
+            `source_forbidden` — the caller may not use a named source as
+            context, or it does not resolve. The two are the same answer.
+            `credential_context` — the requested context is
+            credential-classified and cannot be sent to a model.
+            `prompt_too_large`, `too_many_sources` — the request exceeds the
+            gateway's bounds.
+            `ai_unavailable` — the model provider could not be reached.
           enum:
             - upstream_unavailable
             - scope_required
@@ -2051,6 +2248,12 @@ components:
             - invalid_severity
             - invalid_status
             - invalid_transition
+            - invalid_source
+            - source_forbidden
+            - credential_context
+            - prompt_too_large
+            - too_many_sources
+            - ai_unavailable
         source:
           type: string
           description: The adapter id of the failing upstream, when applicable.

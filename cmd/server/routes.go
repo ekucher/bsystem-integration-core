@@ -65,6 +65,8 @@ func routes() []route {
 		{Method: http.MethodGet, Path: "/api/v1/issues/{id}", Auth: authHuman, Permission: "projects.task.read", ResourceScope: authz.ScopeResource, Handler: func(a *app) http.HandlerFunc { return a.getIssue }},
 		{Method: http.MethodGet, Path: "/api/v1/documents", Auth: authHuman, Permission: "wiki.document.read", Handler: func(a *app) http.HandlerFunc { return a.listDocuments }},
 		{Method: http.MethodGet, Path: "/api/v1/documents/{id}", Auth: authHuman, Permission: "wiki.document.read", ResourceScope: authz.ScopeResource, Handler: func(a *app) http.HandlerFunc { return a.getDocument }},
+		{Method: http.MethodPost, Path: "/api/v1/ai/ask", Auth: authHuman, Permission: "ai.query", Handler: func(a *app) http.HandlerFunc { return a.aiAsk }},
+		{Method: http.MethodGet, Path: "/api/v1/ai/audit", Auth: authHuman, Permission: "*", Handler: func(a *app) http.HandlerFunc { return a.aiAudit }},
 		{Method: http.MethodGet, Path: "/api/v1/incidents", Auth: authHuman, Permission: "support.incident.read", Handler: func(a *app) http.HandlerFunc { return a.listSupportRecords }},
 		{Method: http.MethodPost, Path: "/api/v1/incidents", Auth: authHuman, Permission: "support.incident.write", Handler: func(a *app) http.HandlerFunc { return a.createSupportRecord }},
 		{Method: http.MethodGet, Path: "/api/v1/incidents/{id}", Auth: authHuman, Permission: "support.incident.read", ResourceScope: authz.ScopeClient, Handler: func(a *app) http.HandlerFunc { return a.getSupportRecord }},

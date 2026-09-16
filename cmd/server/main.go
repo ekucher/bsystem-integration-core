@@ -12,6 +12,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/ekucher/bsystem-integration-core/internal/ai"
 	"github.com/ekucher/bsystem-integration-core/internal/authz"
 	"github.com/ekucher/bsystem-integration-core/internal/platformdb"
 	"github.com/ekucher/bsystem-integration-core/internal/search"
@@ -69,6 +70,11 @@ type app struct {
 	db    *platformdb.DB
 	nc    *nats.Conn
 	authz *authz.Evaluator
+	// aiProvider is the language model the gateway calls. It is always
+	// non-nil: the fake provider is the default, so the gateway's
+	// authorization, classification and audit behaviour is exercised in every
+	// deployment rather than only where a model is configured.
+	aiProvider ai.Provider
 	// searchProvider is the search engine. It is always non-nil: the
 	// in-memory provider is the default, so search answers honestly with an
 	// empty index rather than failing as unconfigured.
@@ -423,7 +429,7 @@ func main() {
 			defer nc.Close()
 		}
 	}
-	a := &app{db: db, nc: nc, authz: authz.New(db, authz.DefaultConfinedRoles()), searchProvider: searchProvider()}
+	a := &app{db: db, nc: nc, authz: authz.New(db, authz.DefaultConfinedRoles()), searchProvider: searchProvider(), aiProvider: aiProviderFromEnv()}
 	a.registerPlatformMetrics()
 
 	addr := os.Getenv("HTTP_ADDR")
