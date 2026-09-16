@@ -1,10 +1,15 @@
 package platformdb
 
 import (
+	"context"
+	"errors"
 	"fmt"
+	"os"
 	"regexp"
+	"strings"
 	"sync"
 	"testing"
+	"time"
 )
 
 // Global IDs are immutable and everything else refers to them, so two records
@@ -158,15 +163,26 @@ func TestConcurrentRequestsForOneRecordConvergeOnOneGlobalID(t *testing.T) {
 	start.Done()
 	done.Wait()
 
-	// A loser in this race may be rejected by the unique constraint, which is
-	// the database refusing to create a second identity — correct behaviour,
-	// and better than silently allocating one. What must never happen is two
-	// different ids coming back.
+	// This test used to tolerate a loser being rejected by the unique
+	// constraint, on the reasoning that the database refusing to create a
+	// second identity is better than silently allocating one. Both halves of
+	// that are true, and they were not the only two options.
+	//
+	// The third is what the platform does now: the constraint still refuses
+	// the duplicate, and the loser reads the row the winner just committed.
+	// Nothing is invented, nothing is lost, and every caller gets the id.
+	//
+	// Tolerating the failure here mattered more than it looked, because of
+	// what the error became one layer up. CreateGlobalEntity returned the
+	// driver error as-is and the handler answered it as HTTP 400 with
+	// err.Error() in the body — a raw SQLSTATE 23505 naming the table, the
+	// column tuple and the constraint, telling a caller their valid input was
+	// invalid, with 400 being the status nobody retries. Measured before the
+	// fix, eight racers: six got an id, two got that.
 	issued := map[string]bool{}
-	var failures int
 	for i := range results {
 		if errs[i] != nil {
-			failures++
+			t.Errorf("racer %d failed: %v; losing the race to allocate an id that now exists is not an error to report", i, errs[i])
 			continue
 		}
 		issued[results[i]] = true
@@ -175,7 +191,7 @@ func TestConcurrentRequestsForOneRecordConvergeOnOneGlobalID(t *testing.T) {
 		t.Fatalf("one upstream record produced %d different Global IDs: %v", len(issued), issued)
 	}
 	if len(issued) == 0 {
-		t.Fatalf("every concurrent request failed (%d of %d)", failures, workers)
+		t.Fatal("every concurrent request failed")
 	}
 
 	// Whatever happened during the race, exactly one row exists afterwards.
@@ -272,5 +288,31 @@ func TestResolvingAnUnknownGlobalIDFails(t *testing.T) {
 
 	if _, err := db.ResolveGlobalEntity(ctx, "CL-999999"); err == nil {
 		t.Fatal("an unknown Global ID must not resolve")
+	}
+}
+
+// An entity type with no registered prefix is the caller's mistake, and the
+// only CreateGlobalEntity failure whose text is safe to hand back. It is a
+// sentinel so the HTTP layer can tell it apart without matching message text.
+func TestAnUnsupportedEntityTypeIsDistinguishableFromADatabaseFailure(t *testing.T) {
+	adminDSN := os.Getenv("TEST_DATABASE_URL")
+	if adminDSN == "" {
+		t.Skip("TEST_DATABASE_URL is not configured")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+
+	db, err := Open(ctx, migrationDatabase(ctx, t, adminDSN))
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	defer db.Close()
+
+	_, err = db.CreateGlobalEntity(ctx, "not-an-entity", "espocrm", "x-1", "", nil)
+	if !errors.Is(err, ErrUnsupportedEntityType) {
+		t.Fatalf("error = %v, want one matching ErrUnsupportedEntityType", err)
+	}
+	if strings.Contains(err.Error(), "SQLSTATE") || strings.Contains(err.Error(), "constraint") {
+		t.Errorf("the caller-facing error carries database internals: %q", err)
 	}
 }

@@ -528,3 +528,68 @@ func auditOutcome(t *testing.T, action, outcome string) float64 {
 	// is zero rather than a failure.
 	return 0
 }
+
+// No database internal reaches a caller, and an unsupported entity type is
+// told apart from a platform failure.
+//
+// The allocation handler answered every CreateGlobalEntity failure as HTTP 400
+// with err.Error() in the body. For the one failure a caller causes that was
+// right; for a database error it returned a raw SQL message — naming the
+// table, the column tuple and the constraint — as a client mistake, on the
+// status nobody retries. docs/ARCHITECTURE.md and the platform's error model
+// both say upstream and internal errors must not leak internal topology, and
+// nothing checked this path.
+func TestGlobalIDAllocationLeaksNoDatabaseInternals(t *testing.T) {
+	_, handler := integrationApp(t, matrixPrincipals())
+
+	post := func(body string) *httptest.ResponseRecorder {
+		t.Helper()
+		request := httptest.NewRequest(http.MethodPost, "/api/v1/global-ids", strings.NewReader(body))
+		request.Header.Set("Authorization", "Bearer administrator")
+		request.Header.Set("Content-Type", "application/json")
+		recorder := httptest.NewRecorder()
+		handler.ServeHTTP(recorder, request)
+		return recorder
+	}
+
+	// The caller's own mistake: a type the platform mints no prefix for.
+	// Answered 400, because it is the caller's, and carrying a code because
+	// the contract tells callers to branch on one.
+	refused := post(`{"entity_type":"not-an-entity","source":"espocrm","source_id":"x-1"}`)
+	if refused.Code != http.StatusBadRequest {
+		t.Errorf("unsupported entity type answered %d, want 400: %s", refused.Code, refused.Body.String())
+	}
+	var body map[string]string
+	if err := json.Unmarshal(refused.Body.Bytes(), &body); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if body["code"] != "unsupported_entity_type" {
+		t.Errorf("code = %q, want unsupported_entity_type; a caller told to branch on code needs one", body["code"])
+	}
+
+	// Whatever the platform answers here, it must not be a database's idea of
+	// an error message. These are the fragments that would give away the
+	// schema.
+	for _, leak := range []string{"SQLSTATE", "constraint", "global_entities", "pgx", "duplicate key"} {
+		if strings.Contains(refused.Body.String(), leak) {
+			t.Errorf("the response carries %q: %s", leak, refused.Body.String())
+		}
+	}
+
+	// A duplicate allocation is no longer a failure at all: the second caller
+	// is given the id the first one got.
+	first := post(`{"entity_type":"client","source":"espocrm","source_id":"acc-twice"}`)
+	second := post(`{"entity_type":"client","source":"espocrm","source_id":"acc-twice"}`)
+	if first.Code != http.StatusOK && first.Code != http.StatusCreated {
+		t.Fatalf("first allocation answered %d: %s", first.Code, first.Body.String())
+	}
+	if second.Code != first.Code {
+		t.Errorf("second allocation answered %d, first answered %d: %s", second.Code, first.Code, second.Body.String())
+	}
+	var firstEntity, secondEntity map[string]any
+	_ = json.Unmarshal(first.Body.Bytes(), &firstEntity)
+	_ = json.Unmarshal(second.Body.Bytes(), &secondEntity)
+	if firstEntity["global_id"] != secondEntity["global_id"] {
+		t.Errorf("the same upstream record was answered %v then %v", firstEntity["global_id"], secondEntity["global_id"])
+	}
+}
