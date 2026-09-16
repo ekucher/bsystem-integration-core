@@ -3,6 +3,7 @@ package main
 import (
 	"os"
 	"path/filepath"
+	"regexp"
 	"sort"
 	"strings"
 	"testing"
@@ -256,5 +257,82 @@ func TestOpenAPIDocumentsTheFailuresEachRouteCanProduce(t *testing.T) {
 				t.Errorf("a route requiring %q must document 403", route.Permission)
 			}
 		})
+	}
+}
+
+// errorCodeDocument reads only the Error schema's code enum.
+type errorCodeDocument struct {
+	Components struct {
+		Schemas struct {
+			Error struct {
+				Properties struct {
+					Code struct {
+						Enum []string `yaml:"enum"`
+					} `yaml:"code"`
+				} `yaml:"properties"`
+			} `yaml:"Error"`
+		} `yaml:"schemas"`
+	} `yaml:"components"`
+}
+
+// Every machine-readable code the server emits must be in the contract's
+// enum.
+//
+// A caller is told to branch on `code` rather than on the human-readable
+// summary. An undocumented code makes that instruction false: the caller
+// writes a switch from the contract, the platform returns something outside
+// it, and the default branch handles a failure it has no idea about. Spectral
+// catches the case where an example uses an undocumented code; this catches
+// the case where no example happens to use it.
+func TestEveryEmittedErrorCodeIsDocumented(t *testing.T) {
+	body, err := os.ReadFile(filepath.Join("..", "..", "docs", "openapi.yaml"))
+	if err != nil {
+		t.Fatalf("read docs/openapi.yaml: %v", err)
+	}
+	var document errorCodeDocument
+	if err := yaml.Unmarshal(body, &document); err != nil {
+		t.Fatalf("parse docs/openapi.yaml: %v", err)
+	}
+	documented := map[string]bool{}
+	for _, code := range document.Components.Schemas.Error.Properties.Code.Enum {
+		documented[code] = true
+	}
+	if len(documented) == 0 {
+		t.Fatal("the Error schema documents no codes at all")
+	}
+
+	// The codes are read out of the handlers rather than listed here, so a
+	// new one cannot be added without either documenting it or failing.
+	emitted := map[string]string{}
+	sources, err := filepath.Glob("*.go")
+	if err != nil {
+		t.Fatalf("list handler sources: %v", err)
+	}
+	pattern := regexp.MustCompile(`"code":\s*"([a-z_]+)"`)
+	for _, source := range sources {
+		if strings.HasSuffix(source, "_test.go") {
+			continue
+		}
+		content, err := os.ReadFile(source)
+		if err != nil {
+			t.Fatalf("read %s: %v", source, err)
+		}
+		for _, match := range pattern.FindAllStringSubmatch(string(content), -1) {
+			emitted[match[1]] = source
+		}
+	}
+	if len(emitted) == 0 {
+		t.Fatal("no error codes were found in the handlers; the scan is not working")
+	}
+
+	undocumented := make([]string, 0)
+	for code, source := range emitted {
+		if !documented[code] {
+			undocumented = append(undocumented, code+" (in "+source+")")
+		}
+	}
+	sort.Strings(undocumented)
+	if len(undocumented) > 0 {
+		t.Errorf("emitted but missing from the Error schema's enum:\n  %s", strings.Join(undocumented, "\n  "))
 	}
 }

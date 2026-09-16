@@ -1353,8 +1353,34 @@ components:
         error: {type: string, description: Human-readable summary.}
         code:
           type: string
-          description: Stable machine-readable code.
-          enum: [upstream_unavailable, scope_required, permission_required, not_found, invalid_cursor]
+          description: |
+            Stable machine-readable code. A caller should branch on this
+            rather than on the human-readable summary, which may change.
+
+            `upstream_unavailable` — a source system failed, timed out or
+            rate-limited the platform.
+            `permission_required` — the caller does not hold the permission.
+            `scope_required` — the caller holds it but may only exercise it
+            inside a scope they have been granted, and no grant matches.
+            `not_found` — the resource does not exist, or the caller may not
+            learn that it does.
+            `invalid_cursor` — the pagination cursor was not issued by this
+            platform.
+            `invalid_query` — the search text is too short to run.
+            `invalid_type` — an unknown entity type was requested.
+            `invalid_document` — a search document cannot be indexed as given.
+            `search_unavailable` — the search provider could not be reached.
+            This is never rendered as an empty result.
+          enum:
+            - upstream_unavailable
+            - scope_required
+            - permission_required
+            - not_found
+            - invalid_cursor
+            - invalid_query
+            - invalid_type
+            - invalid_document
+            - search_unavailable
         source:
           type: string
           description: The adapter id of the failing upstream, when applicable.
