@@ -433,6 +433,7 @@ func main() {
 	}
 	a := &app{db: db, nc: nc, authz: authz.New(db, authz.DefaultConfinedRoles()), searchProvider: searchProvider(), aiProvider: aiProviderFromEnv()}
 	a.registerPlatformMetrics()
+	a.registerBuildMetrics()
 
 	addr := os.Getenv("HTTP_ADDR")
 	if addr == "" {

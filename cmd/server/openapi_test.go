@@ -336,3 +336,145 @@ func TestEveryEmittedErrorCodeIsDocumented(t *testing.T) {
 		t.Errorf("emitted but missing from the Error schema's enum:\n  %s", strings.Join(undocumented, "\n  "))
 	}
 }
+
+// acceptanceEndpoints are the endpoints a stage acceptance walks through. They
+// are the ones an owner will exercise by hand against a real deployment, so a
+// missing example here costs someone an afternoon of guessing request shapes.
+var acceptanceEndpoints = []string{
+	"GET /api/v1/me",
+	"GET /api/v1/clients", "GET /api/v1/clients/{id}",
+	"GET /api/v1/contacts", "GET /api/v1/contacts/{id}",
+	"GET /api/v1/projects", "GET /api/v1/projects/{id}",
+	"GET /api/v1/issues", "GET /api/v1/issues/{id}",
+	"GET /api/v1/documents", "GET /api/v1/documents/{id}",
+	"GET /api/v1/notifications",
+	"GET /api/v1/search",
+	"GET /api/v1/servers", "GET /api/v1/servers/{id}",
+	"GET /api/v1/incidents", "POST /api/v1/incidents",
+	"GET /api/v1/incidents/{id}", "PATCH /api/v1/incidents/{id}",
+}
+
+// TestAcceptanceEndpointsDocumentASuccessExample fails when an endpoint on the
+// acceptance path describes a success shape without showing one.
+func TestAcceptanceEndpointsDocumentASuccessExample(t *testing.T) {
+	operations := documentedOperations(t, loadOpenAPI(t))
+
+	for _, key := range acceptanceEndpoints {
+		operation, ok := operations[key]
+		if !ok {
+			t.Errorf("%s is on the acceptance path but is not documented", key)
+			continue
+		}
+		var success *yaml.Node
+		for status := range operation.Responses {
+			if strings.HasPrefix(status, "2") {
+				node := operation.Responses[status]
+				success = &node
+				break
+			}
+		}
+		if success == nil {
+			t.Errorf("%s documents no 2xx response", key)
+			continue
+		}
+		rendered, err := yaml.Marshal(success)
+		if err != nil {
+			t.Fatalf("%s: re-encode response: %v", key, err)
+		}
+		if !strings.Contains(string(rendered), "example") {
+			t.Errorf("%s documents a 2xx response with no example", key)
+		}
+	}
+}
+
+// TestAcceptanceEndpointsDocumentTheirRejections checks the failures an
+// acceptance actually produces.
+//
+// 401 applies everywhere: every one of these endpoints is authenticated.
+// 403 applies only where a permission or a scope can reject the caller, and
+// 404 only where a single resource is addressed. Demanding all three
+// everywhere would push the document to describe rejections the platform never
+// returns, which is worse than silence — a reader would design for them.
+func TestAcceptanceEndpointsDocumentTheirRejections(t *testing.T) {
+	operations := documentedOperations(t, loadOpenAPI(t))
+	routesByKey := map[string]route{}
+	for _, r := range routes() {
+		routesByKey[r.Method+" "+r.Path] = r
+	}
+
+	for _, key := range acceptanceEndpoints {
+		operation, ok := operations[key]
+		if !ok {
+			continue // reported by the test above
+		}
+		r, known := routesByKey[key]
+		if !known {
+			t.Errorf("%s is documented but not served", key)
+			continue
+		}
+
+		if _, ok := operation.Responses["401"]; !ok {
+			t.Errorf("%s is authenticated but documents no 401", key)
+		}
+
+		// A route that names a permission, or confines a resource to a scope,
+		// can answer 403. One that names neither cannot.
+		canForbid := r.Permission != "" || r.ResourceScope != ""
+		_, has403 := operation.Responses["403"]
+		if canForbid && !has403 {
+			t.Errorf("%s requires %q but documents no 403", key, r.Permission)
+		}
+		if !canForbid && has403 {
+			t.Errorf("%s documents a 403 it cannot return: it requires no permission and confines no resource", key)
+		}
+
+		// Only addressed resources can be absent.
+		addressesOne := strings.Contains(key, "{id}")
+		_, has404 := operation.Responses["404"]
+		if addressesOne && !has404 {
+			t.Errorf("%s addresses one resource but documents no 404", key)
+		}
+		if !addressesOne && has404 {
+			t.Errorf("%s documents a 404 for a collection", key)
+		}
+	}
+}
+
+// Examples are published. A real customer name, address or document title in
+// one is a disclosure that survives in every generated client and every copy
+// of the documentation.
+func TestExamplesUseReservedPlaceholderDomains(t *testing.T) {
+	body, err := os.ReadFile(filepath.Join("..", "..", "docs", "openapi.yaml"))
+	if err != nil {
+		t.Fatalf("read docs/openapi.yaml: %v", err)
+	}
+
+	// RFC 2606 and RFC 6761 reserve these for documentation. Anything else is
+	// either a real domain or one that could become real.
+	allowed := regexp.MustCompile(`(?i)\.(example|invalid|test|localhost)\b`)
+	host := regexp.MustCompile(`(?i)https?://([a-z0-9.-]+)`)
+
+	for _, match := range host.FindAllStringSubmatch(string(body), -1) {
+		candidate := match[1]
+		switch {
+		case strings.HasPrefix(candidate, "localhost"), strings.HasPrefix(candidate, "127.0.0.1"):
+			continue
+		// The document's own normative references are real URLs by necessity.
+		case strings.Contains(candidate, "spec.openapis.org"),
+			strings.Contains(candidate, "opensource.org"),
+			strings.Contains(candidate, "github.com"),
+			strings.Contains(candidate, "tools.ietf.org"),
+			strings.Contains(candidate, "www.rfc-editor.org"):
+			continue
+		}
+		if !allowed.MatchString(candidate) {
+			t.Errorf("example host %q is not a reserved documentation domain", candidate)
+		}
+	}
+
+	for _, banned := range []string{"@gmail.com", "@outlook.com", "@yahoo.com"} {
+		if strings.Contains(strings.ToLower(string(body)), banned) {
+			t.Errorf("an example uses a real mail provider (%s)", banned)
+		}
+	}
+}
