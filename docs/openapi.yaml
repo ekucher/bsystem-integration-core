@@ -2376,6 +2376,17 @@ components:
             `unsupported_entity_type` — a Global ID was requested for an
             entity type the platform mints no prefix for. The one allocation
             failure the caller caused and can correct.
+            `invalid_principal_type` — a scope grant names a principal kind
+            outside `user`, `service`, `group`. Two vocabularies live in this
+            schema and are easy to confuse: a role's *kind* is `human` or
+            `service`, a scope grant's *principal* is one of these three.
+            `invalid_scope_type` — a scope outside `global`, `tenant`,
+            `client`, `project`, `resource`.
+            `unknown_permission` — a scope grant names a permission the
+            catalogue does not hold.
+            `scope_store_unavailable` — the grant could not be stored. Like
+            the allocation failure below, the summary carries no database
+            detail and a `request_id` instead.
             `global_id_allocation_failed` — the platform could not allocate.
             The summary is deliberately free of database detail and carries a
             `request_id` instead: the cause is in the platform's own logs,
@@ -2384,6 +2395,10 @@ components:
             - upstream_unavailable
             - unsupported_entity_type
             - global_id_allocation_failed
+            - invalid_principal_type
+            - invalid_scope_type
+            - unknown_permission
+            - scope_store_unavailable
             - adapter_not_configured
             - capability_unsupported
             - scope_required

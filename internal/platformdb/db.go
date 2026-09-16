@@ -413,6 +413,14 @@ func isUniqueViolation(err error) bool {
 	return errors.As(err, &pgErr) && pgErr.Code == "23505"
 }
 
+// isForeignKeyViolation reports whether the database refused a row because it
+// referenced something that does not exist. 23503 is PostgreSQL's
+// foreign_key_violation.
+func isForeignKeyViolation(err error) bool {
+	var pgErr *pgconn.PgError
+	return errors.As(err, &pgErr) && pgErr.Code == "23503"
+}
+
 // globalEntityBySource reads the allocation that already exists for an upstream
 // record. It runs outside the losing transaction deliberately: that transaction
 // cannot see the winner's committed row, because it took its snapshot first.
