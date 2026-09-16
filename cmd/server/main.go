@@ -8,11 +8,16 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"os/signal"
 	"strconv"
 	"strings"
+	"syscall"
 	"time"
 
+	"github.com/ekucher/bsystem-integration-core/internal/ai"
+	"github.com/ekucher/bsystem-integration-core/internal/authz"
 	"github.com/ekucher/bsystem-integration-core/internal/platformdb"
+	"github.com/ekucher/bsystem-integration-core/internal/search"
 	"github.com/nats-io/nats.go"
 )
 
@@ -55,14 +60,89 @@ type globalIDRequest struct {
 type contextKey string
 
 const (
-	userContextKey       contextKey = "user"
-	globalUserContextKey contextKey = "global-user-id"
-	requestIDContextKey  contextKey = "request-id"
+	// userContextKey holds the resolved meResponse for a human caller.
+	userContextKey contextKey = "user"
+	// principalContextKey holds the authorization principal, whether the
+	// caller is a human or a service identity.
+	principalContextKey contextKey = "principal"
+	requestIDContextKey contextKey = "request-id"
 )
 
 type app struct {
-	db *platformdb.DB
-	nc *nats.Conn
+	db    *platformdb.DB
+	nc    *nats.Conn
+	authz *authz.Evaluator
+	// aiProvider is the language model the gateway calls. It is always
+	// non-nil: the fake provider is the default, so the gateway's
+	// authorization, classification and audit behaviour is exercised in every
+	// deployment rather than only where a model is configured.
+	aiProvider ai.Provider
+	// searchProvider is the search engine. It is always non-nil: the
+	// in-memory provider is the default, so search answers honestly with an
+	// empty index rather than failing as unconfigured.
+	searchProvider search.Provider
+}
+
+// accessFrom returns the resolved access of the human caller.
+func accessFrom(ctx context.Context) meResponse {
+	access, _ := ctx.Value(userContextKey).(meResponse)
+	return access
+}
+
+// principalFrom returns the authorization principal of the caller.
+func principalFrom(ctx context.Context) authz.Principal {
+	principal, _ := ctx.Value(principalContextKey).(authz.Principal)
+	return principal
+}
+
+// writeDenied renders an authorization denial. The decision's reason names the
+// missing permission and nothing else, so a denial never reveals whether the
+// resource exists or who owns it.
+func writeDenied(w http.ResponseWriter, decision authz.Decision) {
+	body := map[string]string{"error": decision.Reason}
+	if decision.Code != "" {
+		body["code"] = decision.Code
+	}
+	writeJSON(w, http.StatusForbidden, body)
+}
+
+// authorize enforces a route's declared permission across the whole platform,
+// before the handler runs.
+//
+// Routes that address a single resource declare a scope type instead, and
+// evaluate in the handler once they know which resource was addressed; see
+// authorizeResource.
+func (a *app) authorize(permission string, next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		decision, err := a.authz.Evaluate(r.Context(), principalFrom(r.Context()), permission, authz.Global())
+		if err != nil {
+			logger.ErrorContext(r.Context(), "authorization evaluation failed", "error", err.Error())
+			writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "authorization store unavailable"})
+			return
+		}
+		if !decision.Allowed {
+			writeDenied(w, decision)
+			return
+		}
+		next.ServeHTTP(w, r)
+	})
+}
+
+// authorizeResource evaluates a route's permission against one resolved
+// resource. It reports whether the caller may proceed, having already written
+// the denial when they may not.
+func (a *app) authorizeResource(w http.ResponseWriter, r *http.Request, permission, scopeType, scopeID string) bool {
+	decision, err := a.authz.Evaluate(r.Context(), principalFrom(r.Context()), permission, authz.Resource(scopeType, scopeID))
+	if err != nil {
+		logger.ErrorContext(r.Context(), "authorization evaluation failed", "error", err.Error())
+		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "authorization store unavailable"})
+		return false
+	}
+	if !decision.Allowed {
+		writeDenied(w, decision)
+		return false
+	}
+	return true
 }
 
 func writeJSON(w http.ResponseWriter, status int, v any) {
@@ -122,7 +202,7 @@ func (a *app) authenticate(next http.Handler) http.Handler {
 		}
 		info, err := fetchUserInfo(r.Context(), strings.TrimPrefix(header, "Bearer "))
 		if err != nil {
-			log.Printf("authentication failed: %v", err)
+			logger.WarnContext(r.Context(), "authentication failed", "error", err.Error())
 			writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "invalid or expired token"})
 			return
 		}
@@ -134,15 +214,25 @@ func (a *app) authenticate(next http.Handler) http.Handler {
 			Subject: info.Sub, Email: info.Email, DisplayName: info.Name, Username: username, Groups: unique(info.Groups),
 		})
 		if err != nil {
-			log.Printf("identity persistence failed: %v", err)
+			logger.ErrorContext(r.Context(), "identity persistence failed", "error", err.Error())
 			writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "identity persistence unavailable"})
 			return
 		}
 		if created {
 			a.publish("identity.created", map[string]any{"global_user_id": globalUserID, "subject": info.Sub})
 		}
-		ctx := context.WithValue(r.Context(), userContextKey, info)
-		ctx = context.WithValue(ctx, globalUserContextKey, globalUserID)
+		// Access is resolved once per request rather than per handler, so a
+		// single request cannot observe two different authorization states.
+		access, err := a.resolveAccess(r.Context(), info, globalUserID)
+		if err != nil {
+			logger.ErrorContext(r.Context(), "RBAC resolution failed", "error", err.Error())
+			writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "RBAC store unavailable"})
+			return
+		}
+		ctx := context.WithValue(r.Context(), userContextKey, access)
+		ctx = context.WithValue(ctx, principalContextKey, authz.Principal{
+			ID: access.ID, Kind: authz.KindUser, Roles: access.Roles, Permissions: access.Permissions,
+		})
 		next.ServeHTTP(w, r.WithContext(ctx))
 	})
 }
@@ -181,15 +271,6 @@ func (a *app) resolveAccess(ctx context.Context, info userInfo, globalUserID str
 	}, nil
 }
 
-func hasPermission(access meResponse, permission string) bool {
-	for _, p := range access.Permissions {
-		if p == "*" || p == permission {
-			return true
-		}
-	}
-	return false
-}
-
 func requestIDFrom(ctx context.Context) string {
 	id, _ := ctx.Value(requestIDContextKey).(string)
 	return id
@@ -209,21 +290,32 @@ func sourceIP(r *http.Request) string {
 func (a *app) audit(r *http.Request, access meResponse, action, resourceType, resourceID string, metadata map[string]any) {
 	err := a.db.InsertAudit(r.Context(), platformdb.AuditEvent{Subject: access.Subject, GlobalUserID: access.ID, Action: action, ResourceType: resourceType, ResourceID: resourceID, RequestID: requestIDFrom(r.Context()), SourceIP: sourceIP(r), Metadata: metadata})
 	if err != nil {
-		log.Printf("audit write failed: %v", err)
+		logger.ErrorContext(r.Context(), "audit write failed", "error", err.Error())
 	}
 }
 
+// publish sends a platform event, recording the outcome.
+//
+// The outcome is counted rather than only logged, because "no events" and
+// "every event failed to publish" look identical on a dashboard that only
+// counts successes.
 func (a *app) publish(subject string, payload any) {
 	if a.nc == nil {
+		eventsPublished.Inc(subject, "unavailable")
 		return
 	}
 	body, err := json.Marshal(payload)
 	if err != nil {
+		eventsPublished.Inc(subject, "encode_failed")
+		logger.Error("event could not be encoded", "subject", subject, "error", err.Error())
 		return
 	}
 	if err := a.nc.Publish(subject, body); err != nil {
-		log.Printf("NATS publish %s failed: %v", subject, err)
+		eventsPublished.Inc(subject, "failed")
+		logger.Error("event publication failed", "subject", subject, "error", err.Error())
+		return
 	}
+	eventsPublished.Inc(subject, "published")
 }
 
 func (a *app) health(w http.ResponseWriter, r *http.Request) {
@@ -247,24 +339,11 @@ func (a *app) health(w http.ResponseWriter, r *http.Request) {
 }
 
 func (a *app) me(w http.ResponseWriter, r *http.Request) {
-	info := r.Context().Value(userContextKey).(userInfo)
-	globalUserID := r.Context().Value(globalUserContextKey).(string)
-	access, err := a.resolveAccess(r.Context(), info, globalUserID)
-	if err != nil {
-		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "RBAC store unavailable"})
-		return
-	}
-	writeJSON(w, http.StatusOK, access)
+	writeJSON(w, http.StatusOK, accessFrom(r.Context()))
 }
 
 func (a *app) modules(w http.ResponseWriter, r *http.Request) {
-	info := r.Context().Value(userContextKey).(userInfo)
-	globalUserID := r.Context().Value(globalUserContextKey).(string)
-	access, err := a.resolveAccess(r.Context(), info, globalUserID)
-	if err != nil {
-		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "RBAC store unavailable"})
-		return
-	}
+	access := accessFrom(r.Context())
 	allowed := map[string]bool{}
 	for _, id := range access.Modules {
 		allowed[id] = true
@@ -284,17 +363,7 @@ func (a *app) modules(w http.ResponseWriter, r *http.Request) {
 }
 
 func (a *app) createGlobalID(w http.ResponseWriter, r *http.Request) {
-	info := r.Context().Value(userContextKey).(userInfo)
-	globalUserID := r.Context().Value(globalUserContextKey).(string)
-	access, err := a.resolveAccess(r.Context(), info, globalUserID)
-	if err != nil {
-		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "RBAC store unavailable"})
-		return
-	}
-	if !hasPermission(access, "*") {
-		writeJSON(w, http.StatusForbidden, map[string]string{"error": "administrator permission required"})
-		return
-	}
+	access := accessFrom(r.Context())
 	var input globalIDRequest
 	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<20)).Decode(&input); err != nil {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid JSON body"})
@@ -318,18 +387,8 @@ func (a *app) createGlobalID(w http.ResponseWriter, r *http.Request) {
 }
 
 func (a *app) resolveGlobalID(w http.ResponseWriter, r *http.Request) {
-	info := r.Context().Value(userContextKey).(userInfo)
-	globalUserID := r.Context().Value(globalUserContextKey).(string)
-	access, err := a.resolveAccess(r.Context(), info, globalUserID)
-	if err != nil {
-		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "RBAC store unavailable"})
-		return
-	}
-	if !hasPermission(access, "*") {
-		writeJSON(w, http.StatusForbidden, map[string]string{"error": "administrator permission required"})
-		return
-	}
-	id := strings.TrimPrefix(r.URL.Path, "/api/v1/global-ids/")
+	access := accessFrom(r.Context())
+	id := strings.TrimSpace(r.PathValue("id"))
 	if id == "" {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "Global ID is required"})
 		return
@@ -344,17 +403,6 @@ func (a *app) resolveGlobalID(w http.ResponseWriter, r *http.Request) {
 }
 
 func (a *app) auditEvents(w http.ResponseWriter, r *http.Request) {
-	info := r.Context().Value(userContextKey).(userInfo)
-	globalUserID := r.Context().Value(globalUserContextKey).(string)
-	access, err := a.resolveAccess(r.Context(), info, globalUserID)
-	if err != nil {
-		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "RBAC store unavailable"})
-		return
-	}
-	if !hasPermission(access, "*") {
-		writeJSON(w, http.StatusForbidden, map[string]string{"error": "administrator permission required"})
-		return
-	}
 	limit, _ := strconv.Atoi(r.URL.Query().Get("limit"))
 	events, err := a.db.ListAudit(r.Context(), limit)
 	if err != nil {
@@ -377,34 +425,79 @@ func main() {
 	if natsURL := os.Getenv("NATS_URL"); natsURL != "" {
 		nc, err = nats.Connect(natsURL, nats.Name("bsystem-integration-core"), nats.Timeout(5*time.Second), nats.MaxReconnects(-1))
 		if err != nil {
-			log.Printf("NATS unavailable at startup: %v", err)
+			logger.Warn("NATS unavailable at startup", "error", err.Error())
 			nc = nil
 		} else {
 			defer nc.Close()
 		}
 	}
-	a := &app{db: db, nc: nc}
-
-	publicMux := http.NewServeMux()
-	publicMux.HandleFunc("GET /health", a.health)
-
-	protectedMux := http.NewServeMux()
-	protectedMux.HandleFunc("GET /api/v1/me", a.me)
-	protectedMux.HandleFunc("GET /api/v1/modules", a.modules)
-	protectedMux.HandleFunc("POST /api/v1/global-ids", a.createGlobalID)
-	protectedMux.HandleFunc("GET /api/v1/global-ids/", a.resolveGlobalID)
-	protectedMux.HandleFunc("GET /api/v1/audit", a.auditEvents)
-
-	root := http.NewServeMux()
-	registerServiceRoutes(root, a)
-	root.Handle("/api/", a.authenticate(protectedMux))
-	root.Handle("/health", publicMux)
+	a := &app{db: db, nc: nc, authz: authz.New(db, authz.DefaultConfinedRoles()), searchProvider: searchProvider(), aiProvider: aiProviderFromEnv()}
+	a.registerPlatformMetrics()
 
 	addr := os.Getenv("HTTP_ADDR")
 	if addr == "" {
 		addr = ":8080"
 	}
-	server := &http.Server{Addr: addr, Handler: requestID(root), ReadHeaderTimeout: 5 * time.Second, ReadTimeout: 15 * time.Second, WriteTimeout: 15 * time.Second, IdleTimeout: 60 * time.Second}
-	log.Printf("bsystem-integration-core v0.5.0 listening on %s", addr)
-	log.Fatal(server.ListenAndServe())
+	// WriteTimeout must exceed the longest a handler can legitimately take,
+	// or the server cuts a response the handler is still producing — and the
+	// caller sees a truncated body rather than the timeout that caused it.
+	// The AI gateway is the longest, so the bound is derived from it rather
+	// than written as a constant somebody has to remember to keep in step.
+	writeTimeout := durationEnv("HTTP_WRITE_TIMEOUT", 60*time.Second)
+	if minimum := aiTimeout() + 10*time.Second; writeTimeout < minimum {
+		logger.Warn("raising the write timeout above the AI provider bound",
+			"configured", writeTimeout.String(), "using", minimum.String())
+		writeTimeout = minimum
+	}
+
+	server := &http.Server{
+		Addr:    addr,
+		Handler: a.handler(),
+		// ReadHeaderTimeout is the one that matters for a slowloris: it
+		// bounds how long a connection may spend sending nothing useful.
+		ReadHeaderTimeout: durationEnv("HTTP_READ_HEADER_TIMEOUT", 5*time.Second),
+		ReadTimeout:       durationEnv("HTTP_READ_TIMEOUT", 15*time.Second),
+		WriteTimeout:      writeTimeout,
+		IdleTimeout:       durationEnv("HTTP_IDLE_TIMEOUT", 60*time.Second),
+	}
+
+	// Shut down on SIGTERM rather than dying on it.
+	//
+	// A container runtime sends SIGTERM and then waits before SIGKILL. A
+	// process that exits immediately drops every request in flight, which
+	// during a rolling deploy means a burst of failures for users who did
+	// nothing but arrive at the wrong moment — and which looks like an
+	// intermittent platform fault rather than a deployment.
+	shutdown := make(chan os.Signal, 1)
+	signal.Notify(shutdown, syscall.SIGINT, syscall.SIGTERM)
+
+	serverErrors := make(chan error, 1)
+	go func() {
+		logger.Info("bsystem-integration-core listening", "version", "0.6.0", "addr", addr,
+			"write_timeout", writeTimeout.String())
+		serverErrors <- server.ListenAndServe()
+	}()
+
+	select {
+	case err := <-serverErrors:
+		if err != nil && !errors.Is(err, http.ErrServerClosed) {
+			log.Fatalf("server failed: %v", err)
+		}
+	case sig := <-shutdown:
+		logger.Info("shutting down", "signal", sig.String())
+		// The grace period must be shorter than the runtime's own kill
+		// delay, or the runtime wins the race and the graceful path never
+		// completes. Ten seconds is comfortably inside Docker's default
+		// thirty and Kubernetes' default thirty.
+		ctx, cancel := context.WithTimeout(context.Background(), durationEnv("HTTP_SHUTDOWN_GRACE", 10*time.Second))
+		defer cancel()
+		if err := server.Shutdown(ctx); err != nil {
+			// A request that outlived the grace period is closed. Saying so
+			// is the point: a silent close looks like a network fault to
+			// whoever was holding the connection.
+			logger.Warn("shutdown deadline reached with requests still in flight", "error", err.Error())
+			_ = server.Close()
+		}
+		logger.Info("stopped")
+	}
 }

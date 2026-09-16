@@ -3,3 +3,11 @@ dist/
 .env
 *.log
 coverage.out
+
+# Editor and OS noise. Listed once here rather than in each contributor's
+# global config, so a stray file cannot reach a review.
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+*.swp

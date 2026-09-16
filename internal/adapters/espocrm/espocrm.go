@@ -1,25 +1,27 @@
+// Package espocrm adapts the EspoCRM REST API to BSYSTEM.
+//
+// It isolates HUB and the normalized API from EspoCRM's conventions: nothing
+// outside this package sees an EspoCRM field name, status code or envelope.
 package espocrm
 
 import (
 	"context"
-	"encoding/json"
-	"errors"
-	"fmt"
 	"net/http"
 	"net/url"
 	"strconv"
 	"strings"
-	"time"
 
 	"github.com/ekucher/bsystem-integration-core/internal/adapters"
+	"github.com/ekucher/bsystem-integration-core/internal/adapters/httpx"
 )
 
+// Client reads clients and contacts from EspoCRM.
 type Client struct {
-	baseURL *url.URL
-	apiKey  string
-	http    *http.Client
+	http   *httpx.Client
+	header http.Header
 }
 
+// Account is an EspoCRM account, which BSYSTEM normalizes to a client.
 type Account struct {
 	ID      string `json:"id"`
 	Name    string `json:"name"`
@@ -28,6 +30,7 @@ type Account struct {
 	Phone   string `json:"phoneNumber,omitempty"`
 }
 
+// Contact is an EspoCRM contact.
 type Contact struct {
 	ID        string `json:"id"`
 	Name      string `json:"name"`
@@ -36,102 +39,117 @@ type Contact struct {
 	Phone     string `json:"phoneNumber,omitempty"`
 }
 
+// listResponse is EspoCRM's collection envelope: a total across the whole
+// collection plus the requested window.
 type listResponse[T any] struct {
 	Total int `json:"total"`
 	List  []T `json:"list"`
 }
 
-func New(rawURL, apiKey string, timeout time.Duration) (*Client, error) {
-	rawURL = strings.TrimSpace(rawURL)
-	if rawURL == "" {
-		return nil, errors.New("EspoCRM base URL is required")
+// Collection bounds. EspoCRM accepts larger pages, but the platform caps what
+// it will ask for so that one request cannot pull an unbounded amount of
+// upstream data through the adapter.
+const (
+	defaultPageSize = 50
+	maxPageSize     = 200
+)
+
+// New returns a client for the EspoCRM instance at rawURL.
+func New(config adapters.Config) (*Client, error) {
+	client, err := httpx.New(httpx.OptionsFor("espocrm", config))
+	if err != nil {
+		return nil, err
 	}
-	u, err := url.Parse(strings.TrimRight(rawURL, "/"))
-	if err != nil || u.Scheme == "" || u.Host == "" {
-		return nil, errors.New("invalid EspoCRM base URL")
+	header := http.Header{}
+	if key := strings.TrimSpace(config.APIKey); key != "" {
+		header.Set("X-Api-Key", key)
 	}
-	if timeout <= 0 {
-		timeout = 10 * time.Second
-	}
-	return &Client{baseURL: u, apiKey: strings.TrimSpace(apiKey), http: &http.Client{Timeout: timeout}}, nil
+	return &Client{http: client, header: header}, nil
 }
 
 func (c *Client) Info() adapters.Info {
 	return adapters.Info{ID: "espocrm", Name: "EspoCRM", Version: "1", Status: adapters.StatusReady, Capabilities: []string{"clients.read", "contacts.read"}}
 }
 
+// Health probes the endpoint EspoCRM uses to describe the calling API user,
+// which exercises both reachability and the credential.
 func (c *Client) Health(ctx context.Context) adapters.Health {
-	req, err := c.request(ctx, http.MethodGet, "/api/v1/App/user", nil)
-	if err != nil {
+	var out map[string]any
+	if err := c.get(ctx, "/api/v1/App/user", nil, &out); err != nil {
 		return adapters.Health{Status: adapters.StatusDegraded, Message: err.Error()}
-	}
-	resp, err := c.http.Do(req)
-	if err != nil {
-		return adapters.Health{Status: adapters.StatusDegraded, Message: err.Error()}
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return adapters.Health{Status: adapters.StatusDegraded, Message: fmt.Sprintf("HTTP %d", resp.StatusCode)}
 	}
 	return adapters.Health{Status: adapters.StatusReady}
 }
 
-func (c *Client) ListAccounts(ctx context.Context, maxSize int) ([]Account, error) {
-	if maxSize <= 0 || maxSize > 200 {
-		maxSize = 50
-	}
-	q := url.Values{"maxSize": {strconv.Itoa(maxSize)}, "orderBy": {"name"}, "order": {"asc"}}
-	var out listResponse[Account]
-	if err := c.getJSON(ctx, "/api/v1/Account", q, &out); err != nil {
-		return nil, err
-	}
-	return out.List, nil
+// BreakerState reports the adapter's circuit state.
+func (c *Client) BreakerState() string { return string(c.http.BreakerState()) }
+
+// ListAccounts returns one page of accounts.
+func (c *Client) ListAccounts(ctx context.Context, page adapters.Page) ([]Account, adapters.PageInfo, error) {
+	return listCollection[Account](ctx, c, "/api/v1/Account", page)
 }
 
-func (c *Client) ListContacts(ctx context.Context, maxSize int) ([]Contact, error) {
-	if maxSize <= 0 || maxSize > 200 {
-		maxSize = 50
-	}
-	q := url.Values{"maxSize": {strconv.Itoa(maxSize)}, "orderBy": {"name"}, "order": {"asc"}}
-	var out listResponse[Contact]
-	if err := c.getJSON(ctx, "/api/v1/Contact", q, &out); err != nil {
-		return nil, err
-	}
-	return out.List, nil
+// ListContacts returns one page of contacts.
+func (c *Client) ListContacts(ctx context.Context, page adapters.Page) ([]Contact, adapters.PageInfo, error) {
+	return listCollection[Contact](ctx, c, "/api/v1/Contact", page)
 }
 
-func (c *Client) getJSON(ctx context.Context, path string, query url.Values, out any) error {
-	req, err := c.request(ctx, http.MethodGet, path, query)
+func listCollection[T any](ctx context.Context, c *Client, path string, page adapters.Page) ([]T, adapters.PageInfo, error) {
+	offset, limit, err := page.Resolve(defaultPageSize, maxPageSize)
 	if err != nil {
-		return err
+		return nil, adapters.PageInfo{}, err
 	}
-	resp, err := c.http.Do(req)
-	if err != nil {
-		return fmt.Errorf("EspoCRM request failed: %w", err)
+	query := url.Values{
+		"maxSize": {strconv.Itoa(limit)},
+		"offset":  {strconv.Itoa(offset)},
+		"orderBy": {"name"},
+		"order":   {"asc"},
 	}
-	defer resp.Body.Close()
-	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return fmt.Errorf("EspoCRM returned HTTP %d", resp.StatusCode)
+	var out listResponse[T]
+	if err := c.get(ctx, path, query, &out); err != nil {
+		return nil, adapters.PageInfo{}, err
 	}
-	if err := json.NewDecoder(resp.Body).Decode(out); err != nil {
-		return fmt.Errorf("decode EspoCRM response: %w", err)
-	}
-	return nil
+	return out.List, adapters.NewPageInfo(out.Total, offset, len(out.List)), nil
 }
 
-func (c *Client) request(ctx context.Context, method, path string, query url.Values) (*http.Request, error) {
-	u := *c.baseURL
-	u.Path = strings.TrimRight(c.baseURL.Path, "/") + path
-	if query != nil {
-		u.RawQuery = query.Encode()
+// GetAccount reads one account. It returns adapters.ErrNotFound when the
+// upstream has no such record.
+func (c *Client) GetAccount(ctx context.Context, id string) (Account, error) {
+	var account Account
+	if err := c.getByID(ctx, "/api/v1/Account/", id, &account); err != nil {
+		return Account{}, err
 	}
-	req, err := http.NewRequestWithContext(ctx, method, u.String(), nil)
-	if err != nil {
-		return nil, err
+	return account, nil
+}
+
+// GetContact reads one contact. It returns adapters.ErrNotFound when the
+// upstream has no such record.
+func (c *Client) GetContact(ctx context.Context, id string) (Contact, error) {
+	var contact Contact
+	if err := c.getByID(ctx, "/api/v1/Contact/", id, &contact); err != nil {
+		return Contact{}, err
 	}
-	req.Header.Set("Accept", "application/json")
-	if c.apiKey != "" {
-		req.Header.Set("X-Api-Key", c.apiKey)
+	return contact, nil
+}
+
+func (c *Client) getByID(ctx context.Context, prefix, id string, out any) error {
+	id = strings.TrimSpace(id)
+	if id == "" {
+		// An empty identifier cannot name a record, and sending it would make
+		// the collection endpoint answer instead of the detail one.
+		return adapters.ErrNotFound
 	}
-	return req, nil
+	return c.get(ctx, prefix+url.PathEscape(id), nil, out)
+}
+
+// get issues an idempotent read. Every EspoCRM call BSYSTEM makes is a read,
+// so all of them may be retried.
+func (c *Client) get(ctx context.Context, path string, query url.Values, out any) error {
+	return c.http.Do(ctx, httpx.Request{
+		Method:     http.MethodGet,
+		Path:       path,
+		Query:      query,
+		Header:     c.header,
+		Idempotent: true,
+	}, out)
 }

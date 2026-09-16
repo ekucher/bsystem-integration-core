@@ -9,6 +9,11 @@ import (
 
 var ErrNotSupported = errors.New("adapter capability is not supported")
 
+// ErrNotFound means the upstream system has no such record. Adapters return
+// it instead of a generic failure so that a detail endpoint can answer 404
+// rather than reporting the upstream as unavailable.
+var ErrNotFound = errors.New("upstream resource not found")
+
 type Status string
 
 const (
@@ -33,6 +38,27 @@ type Health struct {
 type Adapter interface {
 	Info() Info
 	Health(context.Context) Health
+}
+
+// Breakered is implemented by adapters that protect their upstream with a
+// circuit breaker. It is optional so that an adapter without one — the
+// disabled placeholder, for instance — needs no stub.
+type Breakered interface {
+	BreakerState() string
+}
+
+// BreakerStates returns the circuit state of every adapter that has one,
+// keyed by adapter id, for health reporting and metrics.
+func (r *Registry) BreakerStates() map[string]string {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	result := map[string]string{}
+	for id, adapter := range r.adapters {
+		if breakered, ok := adapter.(Breakered); ok {
+			result[id] = breakered.BreakerState()
+		}
+	}
+	return result
 }
 
 type Registry struct {
@@ -76,12 +102,50 @@ func (r *Registry) List() []Info {
 	return result
 }
 
+// healthConcurrency bounds how many upstreams are probed at once.
+//
+// The bound exists for when the adapter list grows, not for the three there
+// are today: a readiness check that opened a connection to every upstream
+// simultaneously would be a small thundering herd, arriving exactly when
+// something is already struggling.
+const healthConcurrency = 8
+
+// Health probes every registered adapter.
+//
+// The probes run concurrently. Sequentially, a readiness check costs the sum
+// of every adapter's timeout — three ten-second adapters make a thirty-second
+// health endpoint, which times out in a load balancer precisely when
+// something is wrong and the answer matters most.
+//
+// The lock is held only long enough to snapshot the registry. Holding it
+// across a network call would mean one unreachable upstream blocks every
+// other reader of the registry for as long as its timeout lasts.
 func (r *Registry) Health(ctx context.Context) map[string]Health {
 	r.mu.RLock()
-	defer r.mu.RUnlock()
-	result := make(map[string]Health, len(r.adapters))
+	adapters := make(map[string]Adapter, len(r.adapters))
 	for id, adapter := range r.adapters {
-		result[id] = adapter.Health(ctx)
+		adapters[id] = adapter
 	}
+	r.mu.RUnlock()
+
+	result := make(map[string]Health, len(adapters))
+	var mu sync.Mutex
+	var wg sync.WaitGroup
+	slots := make(chan struct{}, healthConcurrency)
+
+	for id, adapter := range adapters {
+		wg.Add(1)
+		go func(id string, adapter Adapter) {
+			defer wg.Done()
+			slots <- struct{}{}
+			defer func() { <-slots }()
+
+			health := adapter.Health(ctx)
+			mu.Lock()
+			result[id] = health
+			mu.Unlock()
+		}(id, adapter)
+	}
+	wg.Wait()
 	return result
 }

@@ -1,0 +1,121 @@
+name: Security
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  schedule:
+    # Vulnerability databases change without the code changing, so a scheduled
+    # run is what catches a dependency that became vulnerable overnight. A
+    # pull-request-only scan reports the state of the world when the branch
+    # was last touched.
+    - cron: "17 4 * * 1"
+
+permissions:
+  contents: read
+
+jobs:
+  vulnerabilities:
+    name: Go vulnerabilities
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: false
+
+      # govulncheck reports only vulnerabilities the code can actually reach,
+      # so a finding here is an obligation rather than noise to triage.
+      #
+      # The tool is taken at latest on purpose: it resolves its database at
+      # run time, so pinning the binary would give the appearance of
+      # reproducibility without the substance.
+      - name: Run govulncheck
+        run: go run golang.org/x/vuln/cmd/govulncheck@latest ./...
+
+  staticcheck:
+    name: Static analysis
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: false
+
+      - name: Run staticcheck
+        run: go run honnef.co/go/tools/cmd/staticcheck@latest ./...
+
+  secrets:
+    name: Secret scan
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          # Gitleaks scans history, not just the working tree: a secret that
+          # was committed and then removed is still a leaked secret.
+          fetch-depth: 0
+
+      - name: Run gitleaks
+        uses: gitleaks/gitleaks-action@v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  filesystem:
+    name: Dependency and filesystem scan
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Run Trivy
+        uses: aquasecurity/trivy-action@v0.36.0
+        with:
+          scan-type: fs
+          scanners: vuln,secret,misconfig
+          severity: CRITICAL,HIGH
+          exit-code: "1"
+          ignore-unfixed: true
+
+      # An SBOM is what makes the next advisory answerable without a
+      # re-scan: "were we shipping this package, and in which build?"
+      - name: Generate an SBOM
+        uses: aquasecurity/trivy-action@v0.36.0
+        with:
+          scan-type: fs
+          format: cyclonedx
+          output: sbom.cyclonedx.json
+
+      - name: Publish the SBOM
+        uses: actions/upload-artifact@v4
+        with:
+          name: sbom-integration-core
+          path: sbom.cyclonedx.json
+          retention-days: 90
+
+  codeql:
+    name: CodeQL
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      security-events: write
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Initialise CodeQL
+        uses: github/codeql-action/init@v3
+        with:
+          languages: go
+
+      - name: Analyse
+        uses: github/codeql-action/analyze@v3

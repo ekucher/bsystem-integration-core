@@ -1,111 +1,159 @@
 # BSYSTEM Integration Core API
 
-Base path: `/api/v1`
+The machine-readable contract is [`docs/openapi.yaml`](openapi.yaml). It is
+contract-tested against the server's own route inventory, so it cannot drift:
+an endpoint cannot be added, removed or re-secured without the document
+changing with it. This page covers the conventions behind that contract.
 
 ## Purpose
 
-Integration Core is the controlled integration boundary between BSYSTEM-HUB and external/domain systems. It stores platform metadata only and must not replace source-of-truth systems such as CRM, Redmine, QA or Operations.
+Integration Core is the controlled integration boundary between BSYSTEM-HUB and
+external/domain systems. It stores platform metadata only and must not replace
+source-of-truth systems such as CRM, Redmine, QA or Operations.
+
+## Surfaces
+
+| Surface | Base path | Authentication |
+| --- | --- | --- |
+| Human API | `/api/v1` | user access token from authentik |
+| Machine API | `/api/service/v1` | service identity in `BSYSTEM-Services` |
+| Operations | `/health`, `/readyz`, `/metrics` | none |
+
+The two API surfaces are kept separate on purpose: a human token cannot reach
+the machine API, and a service token cannot reach the human API.
+
+### Endpoint index
+
+| Endpoint | Requires |
+| --- | --- |
+| `GET /api/v1/me` | any authenticated user |
+| `GET /api/v1/modules` | any authenticated user |
+| `GET /api/v1/clients` | `crm.client.read` |
+| `GET /api/v1/clients/{id}` | `crm.client.read`, for that client |
+| `GET /api/v1/contacts` | `crm.client.read` |
+| `GET /api/v1/contacts/{id}` | `crm.client.read`, for that contact |
+| `GET /api/v1/projects` | `projects.task.read` |
+| `GET /api/v1/projects/{id}` | `projects.task.read`, for that project |
+| `GET /api/v1/issues` | `projects.task.read` |
+| `GET /api/v1/issues/{id}` | `projects.task.read`, for that issue |
+| `GET /api/v1/documents` | `wiki.document.read` |
+| `GET /api/v1/documents/{id}` | `wiki.document.read`, for that document |
+| `POST /api/v1/global-ids` | administrator |
+| `GET /api/v1/global-ids/{id}` | administrator |
+| `GET /api/v1/audit` | administrator |
+| `GET /api/v1/admin/rbac/roles` | administrator |
+| `GET|POST|DELETE /api/v1/admin/rbac/scopes` | administrator |
+| `GET /api/service/v1/whoami` | service identity |
+| `GET /api/service/v1/adapters` | `adapters.read` |
+| `GET /api/service/v1/adapters/health` | `adapters.read` |
+| `POST /api/service/v1/events` | `events.publish` |
+| `GET /health`, `GET /readyz`, `GET /metrics` | none |
 
 ## Authentication
 
-Human requests use an OIDC access token issued by authentik and forwarded by BSYSTEM-HUB:
+Human requests use an OIDC access token issued by authentik and forwarded by
+BSYSTEM-HUB:
 
 ```http
 Authorization: Bearer <access_token>
 ```
 
-Integration Core validates the token against the authentik UserInfo endpoint, persists the identity mapping and resolves BSYSTEM RBAC.
+Integration Core validates the token against the authentik UserInfo endpoint,
+persists the identity mapping and resolves BSYSTEM RBAC. No human password is
+accepted by Integration Core.
 
-No human password is accepted by Integration Core.
+Service identities present the same kind of token but must be members of
+`BSYSTEM-Services`; a token outside that group is refused by the machine API.
+
+## Authorization
+
+Authorization is enforced in the backend for every request and denies by
+default. A principal whose groups map to no role resolves to no permissions and
+no modules, and is refused everywhere.
+
+An unknown or unmapped resource results in denial, never in broader access. The
+Customer role is refused unscoped documents with `scope_required`, because the
+tenant ownership boundary is not yet authoritative — an undecided boundary must
+deny rather than disclose.
 
 ## Request correlation
 
-`X-Request-ID` is accepted on every request. If missing, Integration Core creates one and returns it in the response.
+`X-Request-ID` is accepted on every request. If missing, Integration Core
+creates one. It is returned on every response and reaches the audit trail and
+every published event, so a single identifier traces
+`HUB → Integration Core → adapter → audit/events`.
 
-## GET /health
+## Errors
 
-Public liveness/dependency status.
+Every failure uses one shape:
 
 ```json
 {
-  "status": "ok",
-  "service": "bsystem-integration-core",
-  "version": "0.3.0",
-  "timestamp": "2026-09-15T20:00:00Z",
-  "checks": {
-    "database": "ok",
-    "nats": "ok"
-  }
+  "error": "upstream service unavailable",
+  "code": "upstream_unavailable",
+  "source": "espocrm"
 }
 ```
 
-Database failure returns HTTP 503. NATS failure degrades event delivery but does not make the API unavailable.
+`error` is always present. `code` is the stable machine-readable form where one
+is defined; `source` names the failing adapter.
 
-## GET /api/v1/me
+| Code | Meaning |
+| --- | --- |
+| `permission_required` | the caller does not hold the permission |
+| `scope_required` | the caller holds it, but no grant covers this resource |
+| `not_found` | no such resource, or the caller may not learn there is one |
+| `invalid_cursor` | the pagination cursor was not issued by this platform |
+| `upstream_unavailable` | the source system failed, rate-limited or timed out |
 
-Returns the authenticated user's persistent Global ID and effective access model.
+An upstream failure — an error status, a rate limit, a timeout, or an open
+circuit after repeated failures — normalizes to `502` with
+`upstream_unavailable`. Upstream status codes, hostnames, credentials and
+payloads are never forwarded, and no error body carries a credential, an
+internal hostname, a stack trace or an upstream payload.
 
-```json
-{
-  "id": "USR-000001",
-  "subject": "authentik-subject",
-  "email": "developer@example.com",
-  "name": "Developer",
-  "username": "developer",
-  "groups": ["BSYSTEM-Developers"],
-  "roles": ["Developer"],
-  "permissions": ["projects.task.read", "development.pr.write"],
-  "modules": ["projects", "qa", "development", "wiki", "operations"]
-}
-```
+Upstream calls are bounded, retried only where retrying can help, and shed
+through a circuit breaker once an upstream is plainly down. See
+[ADAPTERS.md](ADAPTERS.md) and
+[ADR-006](adr/ADR-006-upstream-resilience-policy.md).
 
-The `USR-*` identifier is allocated once and remains stable even if email, username or group membership changes.
+## Normalized entities
 
-## GET /api/v1/modules
-
-Returns only enabled modules allowed by the caller's effective roles. Module metadata comes from PostgreSQL `modules`, not from a frontend hard-coded list.
-
-## POST /api/v1/global-ids
-
-Administrator-only in P0.2.
-
-Creates or returns an idempotent mapping from a source-system entity to a BSYSTEM Global ID.
+Normalized entities never re-expose a raw upstream payload. Each carries its
+platform Global ID alongside the `source` and `source_id` it came from, so the
+source system stays authoritative and traceable:
 
 ```json
 {
-  "entity_type": "client",
+  "id": "CL-000001",
   "source": "espocrm",
-  "source_id": "65fa1234",
-  "tenant_id": "CL-000042",
-  "metadata": {
-    "name": "Example Client"
-  }
+  "source_id": "acc-northwind",
+  "name": "Northwind Trading"
 }
 ```
 
-Response:
+A reference that cannot be resolved is omitted rather than guessed: a contact
+whose upstream account has no mapping is returned without a `client_id`.
 
-```json
-{
-  "global_id": "CL-000043",
-  "entity_type": "client",
-  "source": "espocrm",
-  "source_id": "65fa1234",
-  "tenant_id": "CL-000042",
-  "metadata": {
-    "name": "Example Client"
-  },
-  "created_at": "2026-09-15T20:00:00Z"
-}
-```
+Detail endpoints take the platform Global ID, resolve it to its upstream
+mapping and read that one record. An unknown Global ID, a Global ID belonging
+to a different entity type, and a resource a scope-confined caller has not been
+granted are all answered with the same `404`, so the endpoints cannot be used
+to discover which identifiers exist or who owns them. Reading a detail record
+never allocates a Global ID, so a read cannot mint identifiers as a side
+effect.
 
-The same `(source, entity_type, source_id)` must resolve to the same Global ID.
+## Global IDs
 
-Supported P0.2 prefixes:
+`POST /api/v1/global-ids` creates or returns an idempotent mapping from a
+source-system entity to a BSYSTEM Global ID. The same
+`(source, entity_type, source_id)` always resolves to the same Global ID, and a
+Global ID is never reassigned.
 
 | Entity | Prefix |
 |---|---|
 | User | `USR` |
+| Service identity | `SVC` |
 | Client | `CL` |
 | Contact | `CT` |
 | Project | `PR` |
@@ -119,37 +167,63 @@ Supported P0.2 prefixes:
 | Release | `REL` |
 | Repository | `REP` |
 
-## GET /api/v1/global-ids/{global_id}
+Identity is never derived from names, hostnames, emails or other mutable
+labels.
 
-Administrator-only in P0.2. Resolves a Global ID to its authoritative source mapping.
+## Pagination
 
-## GET /api/v1/audit?limit=100
+Every collection returns the same envelope:
 
-Administrator-only in P0.2. Returns the newest immutable audit records. Maximum page size is 500 during P0.
+```json
+{
+  "data": [ ... ],
+  "pagination": {"total": 42, "limit": 50, "next_cursor": "bzo1MA"}
+}
+```
 
-Audit records include:
+`total` is the size of the whole collection as the source system reports it,
+not the size of the page. `limit` is the page size actually applied.
 
-- OIDC subject;
-- BSYSTEM `USR-*` ID;
-- action;
-- resource type and Global ID;
-- `X-Request-ID`;
-- source IP;
-- metadata;
-- timestamp.
+A caller walks a collection by following `next_cursor` until it is absent. It
+is never present on the final page, so the walk always terminates.
 
-## NATS events
+Cursors are opaque and must not be constructed or parsed: the encoding is an
+implementation detail and will change when a source system gains real cursors.
+A cursor the platform did not issue is rejected with `invalid_cursor` rather
+than reinterpreted.
 
-P0.2 publishes platform events using NATS subjects. The application must continue serving API requests if NATS is temporarily unavailable.
+A `limit` above the maximum is clamped rather than rejected, so a caller
+asking for more than the platform serves gets the maximum. The cap is what
+stops one request pulling an unbounded amount of upstream data; it is 200 for
+CRM collections and 100 for project and document collections, matching those
+systems' own limits.
 
-Initial events:
+## Audit
+
+The audit trail is administrator-only and records who read and changed what:
+the OIDC subject, the `USR-*` Global ID, the action in `entity.action` naming,
+the resource type and Global ID, the `X-Request-ID`, the source IP, metadata
+and a timestamp.
+
+## Events
+
+Platform events are published to NATS on `bsystem.events.<event>` using
+`entity.action` naming. The API keeps serving requests when NATS is
+unavailable; only publication is affected.
+
+Envelopes are normalized before publication: `actor_id` defaults to the
+publishing identity, `request_id` to the request correlation id, `occurred_at`
+to the time of publication and `severity` to `info`.
+
+Platform-generated events:
 
 ```text
 identity.created
+service_identity.created
 global_id.created
 ```
 
-Future business events keep the `entity.action` convention:
+Business events keep the same convention:
 
 ```text
 client.created
@@ -169,14 +243,18 @@ document.updated
 
 Integration Core owns only:
 
-- identity mappings;
+- identity and service identity mappings;
 - module registry;
 - Global ID counters and mappings;
+- RBAC roles, permissions and scope grants;
 - audit events;
 - integration metadata.
 
-It does **not** own CRM clients, Redmine tasks, QA test cases, Outline documents or Operations metrics.
+It does **not** own CRM clients, Redmine tasks, QA test cases, Outline documents
+or Operations metrics.
 
 ## Failure isolation
 
-A failed source adapter must not make unrelated adapters unavailable. PostgreSQL is currently a required dependency; Redis and NATS are auxiliary platform dependencies.
+A failed source adapter must not make unrelated adapters unavailable.
+PostgreSQL is a required dependency; NATS is auxiliary, and its loss degrades
+event delivery without making the API unavailable.

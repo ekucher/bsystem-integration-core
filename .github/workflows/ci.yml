@@ -38,19 +38,115 @@ jobs:
           go-version: "1.26.x"
           cache: false
 
-      - name: Resolve dependencies
-        run: go mod tidy
-
-      - name: Normalize formatting for validation
+      - name: Verify dependencies are tidy and checksums are unchanged
         run: |
-          gofmt -w .
-          if ! git diff --quiet -- '*.go'; then
-            echo "::warning::Some Go files in the repository require gofmt; validation uses the formatted working copy."
-            git diff --stat -- '*.go'
+          go mod tidy -diff
+          go mod verify
+
+      - name: Check formatting
+        run: |
+          unformatted="$(gofmt -l .)"
+          if [ -n "$unformatted" ]; then
+            echo "::error::gofmt required for: $unformatted"
+            exit 1
           fi
 
       - name: Vet
         run: go vet ./...
 
       - name: Test and compile
-        run: go test ./...
+        run: go test -race ./...
+
+      # Run on every build rather than only in the security workflow, so a
+      # vulnerable dependency cannot be merged while waiting for a scheduled
+      # scan.
+      - name: Check for reachable vulnerabilities
+        run: go run golang.org/x/vuln/cmd/govulncheck@latest ./...
+
+      - name: Static analysis
+        run: go run honnef.co/go/tools/cmd/staticcheck@latest ./...
+
+  openapi:
+    name: OpenAPI contract
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - name: Lint the API contract
+        run: npx --yes @stoplight/spectral-cli@6 lint docs/openapi.yaml --fail-severity=error
+
+  e2e:
+    name: Autonomous E2E
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - name: Checkout Integration Core
+        uses: actions/checkout@v4
+        with:
+          path: bsystem-integration-core
+
+      # The E2E stack, its mock upstreams and its scenarios live in the
+      # deployment repository. A branch there with the same name as this one
+      # is used when it exists, so a change spanning both repositories can be
+      # validated before either side merges.
+      - name: Resolve the deployment branch
+        id: deploy-ref
+        run: |
+          ref="${{ github.head_ref || github.ref_name }}"
+          if git ls-remote --exit-code --heads https://github.com/ekucher/bsystem-deploy "$ref" >/dev/null 2>&1; then
+            echo "Using matching bsystem-deploy branch: $ref"
+          else
+            echo "No matching bsystem-deploy branch; using main"
+            ref=main
+          fi
+          echo "ref=$ref" >> "$GITHUB_OUTPUT"
+
+      - name: Checkout the deployment repository
+        uses: actions/checkout@v4
+        with:
+          repository: ekucher/bsystem-deploy
+          ref: ${{ steps.deploy-ref.outputs.ref }}
+          path: bsystem-deploy
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: bsystem-deploy/e2e/go.mod
+          cache: false
+
+      - name: Start the E2E stack
+        working-directory: bsystem-deploy
+        env:
+          INTEGRATION_CORE_CONTEXT: ../bsystem-integration-core
+        run: docker compose -f docker-compose.e2e.yml up -d --build --wait --wait-timeout 300
+
+      - name: Run E2E scenarios
+        working-directory: bsystem-deploy/e2e
+        env:
+          E2E_BASE_URL: http://127.0.0.1:8080
+          E2E_IDENTITY_URL: http://127.0.0.1:9000
+          E2E_ESPOCRM_URL: http://127.0.0.1:8090
+          E2E_REDMINE_URL: http://127.0.0.1:8091
+          E2E_OUTLINE_URL: http://127.0.0.1:8092
+          E2E_NATS_ADDR: 127.0.0.1:4222
+        run: go test -v -count=1 -timeout 15m ./...
+
+      - name: Collect stack logs on failure
+        if: failure()
+        working-directory: bsystem-deploy
+        env:
+          INTEGRATION_CORE_CONTEXT: ../bsystem-integration-core
+        run: docker compose -f docker-compose.e2e.yml logs --no-color --tail=300
+
+      - name: Tear down the E2E stack
+        if: always()
+        working-directory: bsystem-deploy
+        env:
+          INTEGRATION_CORE_CONTEXT: ../bsystem-integration-core
+        run: docker compose -f docker-compose.e2e.yml down -v --remove-orphans

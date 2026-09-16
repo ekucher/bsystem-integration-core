@@ -1,151 +1,2507 @@
 openapi: 3.1.0
 info:
   title: BSYSTEM Integration Core API
-  version: 0.7.0
-  description: Authorization-aware normalized API for the BSYSTEM Platform.
+  version: 0.8.0
+  summary: Authorization-aware normalized API for the BSYSTEM Platform.
+  description: |
+    The Integration Core exposes a normalized view of the systems BSYSTEM
+    integrates with. Source systems stay authoritative; this API never
+    re-exposes a raw upstream payload.
+
+    Three surfaces are served:
+
+    - `/api/v1/*` — the human API, authenticated with a user access token.
+    - `/api/service/v1/*` — the machine API, authenticated with a service
+      identity in the `BSYSTEM-Services` group.
+    - `/health`, `/readyz`, `/metrics` — operational endpoints, unauthenticated
+      by design, which disclose no business data.
+
+    Authorization is enforced in the backend for every request and denies by
+    default. An unknown or unmapped resource results in denial, never in
+    broader access.
+
+    Every response carries `X-Request-ID`, echoing the caller's value or a
+    generated one, and the same identifier reaches the audit trail and
+    published events.
+
+    This document is contract-tested against the server's own route inventory:
+    an endpoint cannot be added or removed without the documentation changing
+    with it.
+  contact:
+    name: BSYSTEM Platform
+    url: https://github.com/ekucher/bsystem-integration-core
+  license:
+    name: UNLICENSED
+    identifier: LicenseRef-Proprietary
 servers:
-  - url: /api/v1
+  - url: /
+    description: The Integration Core, behind the platform reverse proxy.
 security:
   - bearerAuth: []
+tags:
+  - name: Identity
+    description: The authenticated principal and the access it resolves to.
+  - name: Business
+    description: Normalized entities sourced from the authoritative systems.
+  - name: Global IDs
+    description: Immutable platform identifiers for upstream records.
+  - name: AI
+    description: |
+      The gateway to language models. AI is an authorized consumer of BSYSTEM
+      data, never a bypass around authorization.
+  - name: Support
+    description: |
+      Incidents and requests, their lifecycle, and the SLA state derived from
+      whatever targets the business has configured.
+  - name: Infrastructure
+    description: |
+      Servers the platform mirrors but does not own, and what is reported
+      about them. A reporter says what happened; the platform normalizes,
+      stores, publishes and notifies. Distinct from Operations, which is the
+      platform's own health and metrics.
+  - name: Search
+    description: |
+      Cross-module search over normalized entities. Results are filtered to
+      what the caller may read, per document, before anything is returned.
+  - name: Notifications
+    description: |
+      Platform notifications and their per-user read state. A notification is
+      addressed either to one Global user ID or to a permission; who satisfies
+      a permission is resolved from RBAC when the notification is read, not
+      when it is raised.
+  - name: Administration
+    description: Audit trail and RBAC administration. Administrator only.
+  - name: Service
+    description: The machine API, for service identities only.
+  - name: Operations
+    description: Unauthenticated health, readiness and metrics.
+
 paths:
-  /me:
+  /health:
     get:
-      summary: Return the authenticated BSYSTEM user and effective access
+      tags: [Operations]
+      operationId: getHealth
+      summary: Report service and dependency health
+      security: []
       responses:
-        '200': {description: User profile and authorization}
-        '401': {description: Missing or invalid access token}
-  /modules:
+        '200':
+          description: The service is up. Dependencies may be degraded.
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Health'}
+              example:
+                status: ok
+                service: bsystem-integration-core
+                version: 0.5.0
+                timestamp: '2026-01-06T11:30:00Z'
+                checks: {database: ok, nats: ok}
+        '503':
+          description: The database is unreachable.
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Health'}
+
+  /readyz:
     get:
-      summary: List modules visible to the authenticated user
+      tags: [Operations]
+      operationId: getReadiness
+      summary: Report whether the service can serve traffic
+      security: []
       responses:
-        '200': {description: Module list}
-  /clients:
+        '200':
+          description: Ready.
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Readiness'}
+              example:
+                status: ready
+                checks: {database: ok, nats: ok}
+        '503':
+          description: Not ready.
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Readiness'}
+
+  /metrics:
     get:
-      summary: List normalized EspoCRM clients
+      tags: [Operations]
+      operationId: getMetrics
+      summary: Expose Prometheus-compatible metrics
+      security: []
+      responses:
+        '200':
+          description: Metrics in the Prometheus text exposition format.
+          content:
+            text/plain:
+              schema: {type: string}
+              example: |
+                # HELP bsystem_integration_database_up PostgreSQL availability (1=up, 0=down).
+                # TYPE bsystem_integration_database_up gauge
+                bsystem_integration_database_up 1
+
+  /api/v1/me:
+    get:
+      tags: [Identity]
+      operationId: getMe
+      summary: Return the authenticated user and their effective access
+      description: |
+        Allocates the caller's `USR-*` Global ID on first sight and returns it
+        unchanged afterwards. A principal whose groups map to no role resolves
+        to empty roles, permissions and modules rather than to an error.
+      responses:
+        '200':
+          description: The user profile and resolved authorization.
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Me'}
+              example:
+                id: USR-000001
+                subject: ak-user-9f2c
+                email: developer@bsystem.example
+                name: Example Developer
+                username: developer
+                groups: [BSYSTEM-Developers]
+                roles: [Developer]
+                permissions: [projects.task.read, wiki.document.read]
+                modules: [projects, wiki]
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '503': {$ref: '#/components/responses/DependencyUnavailable'}
+
+  /api/v1/modules:
+    get:
+      tags: [Identity]
+      operationId: listModules
+      summary: List the modules the authenticated user may see
+      responses:
+        '200':
+          description: The modules the caller's roles grant, filtered server-side.
+          content:
+            application/json:
+              schema:
+                type: array
+                items: {$ref: '#/components/schemas/Module'}
+              example:
+                - {id: projects, name: Projects, description: Project and task management, status: available}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '503': {$ref: '#/components/responses/DependencyUnavailable'}
+
+  /api/v1/clients:
+    get:
+      tags: [Business]
+      operationId: listClients
+      summary: List normalized clients
+      description: Requires `crm.client.read`. EspoCRM remains authoritative.
       parameters:
         - $ref: '#/components/parameters/Limit'
+        - $ref: '#/components/parameters/Cursor'
       responses:
-        '200': {description: Clients with CL-* Global IDs}
-        '403': {description: Missing crm.client.read}
+        '200':
+          description: Clients with `CL-*` Global IDs.
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/Collection'
+                  - type: object
+                    properties:
+                      data:
+                        type: array
+                        items: {$ref: '#/components/schemas/Client'}
+              example:
+                data:
+                  - {id: CL-000001, source: espocrm, source_id: acc-northwind, name: Northwind Trading, website: 'https://northwind.example', email: info@northwind.example}
+                pagination: {total: 3, limit: 1, next_cursor: bzox}
+        '400': {$ref: '#/components/responses/BadRequest'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '403': {$ref: '#/components/responses/Forbidden'}
         '502': {$ref: '#/components/responses/UpstreamUnavailable'}
-  /contacts:
+        '503': {$ref: '#/components/responses/DependencyUnavailable'}
+
+  /api/v1/contacts:
     get:
-      summary: List normalized EspoCRM contacts
+      tags: [Business]
+      operationId: listContacts
+      summary: List normalized contacts
+      description: |
+        Requires `crm.client.read`. A contact whose upstream account is unknown
+        is returned without a `client_id`: a missing mapping never broadens
+        what the caller can reach.
       parameters:
         - $ref: '#/components/parameters/Limit'
+        - $ref: '#/components/parameters/Cursor'
       responses:
-        '200': {description: Contacts with CT-* Global IDs}
-        '403': {description: Missing CRM read permission}
+        '200':
+          description: Contacts with `CT-*` Global IDs.
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/Collection'
+                  - type: object
+                    properties:
+                      data:
+                        type: array
+                        items: {$ref: '#/components/schemas/Contact'}
+              example:
+                data:
+                  - {id: CT-000001, source: espocrm, source_id: ct-anna, name: Anna Kovalenko, client_id: CL-000001, email: anna@northwind.example}
+                pagination: {total: 3, limit: 1, next_cursor: bzox}
+        '400': {$ref: '#/components/responses/BadRequest'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '403': {$ref: '#/components/responses/Forbidden'}
         '502': {$ref: '#/components/responses/UpstreamUnavailable'}
-  /projects:
+        '503': {$ref: '#/components/responses/DependencyUnavailable'}
+
+  /api/v1/projects:
     get:
-      summary: List normalized Redmine projects
+      tags: [Business]
+      operationId: listProjects
+      summary: List normalized projects
+      description: Requires `projects.task.read`. Redmine remains authoritative.
       parameters:
         - $ref: '#/components/parameters/Limit'
+        - $ref: '#/components/parameters/Cursor'
       responses:
-        '200': {description: Projects with PR-* Global IDs}
-        '403': {description: Missing projects.task.read}
+        '200':
+          description: Projects with `PR-*` Global IDs.
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/Collection'
+                  - type: object
+                    properties:
+                      data:
+                        type: array
+                        items: {$ref: '#/components/schemas/Project'}
+              example:
+                data:
+                  - {id: PR-000001, source: redmine, source_id: '101', name: Northwind Portal, identifier: northwind-portal}
+                pagination: {total: 3, limit: 1, next_cursor: bzox}
+        '400': {$ref: '#/components/responses/BadRequest'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '403': {$ref: '#/components/responses/Forbidden'}
         '502': {$ref: '#/components/responses/UpstreamUnavailable'}
-  /issues:
+        '503': {$ref: '#/components/responses/DependencyUnavailable'}
+
+  /api/v1/issues:
     get:
-      summary: List normalized Redmine issues
+      tags: [Business]
+      operationId: listIssues
+      summary: List normalized issues
+      description: Requires `projects.task.read`. Redmine remains authoritative.
       parameters:
         - $ref: '#/components/parameters/Limit'
+        - $ref: '#/components/parameters/Cursor'
         - name: project
           in: query
+          required: false
+          description: Restrict to one project, by upstream numeric id or identifier.
           schema: {type: string}
+          example: northwind-portal
       responses:
-        '200': {description: Issues with TSK-* Global IDs}
-        '403': {description: Missing projects.task.read}
+        '200':
+          description: Issues with `TSK-*` Global IDs.
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/Collection'
+                  - type: object
+                    properties:
+                      data:
+                        type: array
+                        items: {$ref: '#/components/schemas/Issue'}
+              example:
+                data:
+                  - {id: TSK-000001, source: redmine, source_id: '5001', subject: Design portal navigation, project_id: PR-000001, status: New}
+                pagination: {total: 3, limit: 1, next_cursor: bzox}
+        '400': {$ref: '#/components/responses/BadRequest'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '403': {$ref: '#/components/responses/Forbidden'}
         '502': {$ref: '#/components/responses/UpstreamUnavailable'}
-  /documents:
+        '503': {$ref: '#/components/responses/DependencyUnavailable'}
+
+  /api/v1/documents:
     get:
-      summary: List normalized internal Outline documents
-      description: Customer role is denied until tenant-aware document scopes are implemented.
+      tags: [Business]
+      operationId: listDocuments
+      summary: List normalized internal documents
+      description: |
+        Requires `wiki.document.read`. The Customer role is scope-confined, so
+        it is denied with `scope_required` until tenant ownership is
+        authoritative: an undecided ownership boundary must deny rather than
+        disclose.
       parameters:
         - $ref: '#/components/parameters/Limit'
+        - $ref: '#/components/parameters/Cursor'
       responses:
-        '200': {description: Documents with DOC-* Global IDs}
-        '403': {description: Missing permission or tenant scope required}
+        '200':
+          description: Documents with `DOC-*` Global IDs.
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/Collection'
+                  - type: object
+                    properties:
+                      data:
+                        type: array
+                        items: {$ref: '#/components/schemas/Document'}
+              example:
+                data:
+                  - {id: DOC-000001, source: outline, source_id: doc-runbook, title: Integration Core Runbook, collection_id: col-internal, updated_at: '2026-01-06T11:30:00.000Z'}
+                pagination: {total: 3, limit: 1, next_cursor: bzox}
+        '400': {$ref: '#/components/responses/BadRequest'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '403':
+          description: Missing `wiki.document.read`, or a tenant scope is required.
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Error'}
+              example: {error: wiki.document.read requires a scope grant for this resource, code: scope_required}
         '502': {$ref: '#/components/responses/UpstreamUnavailable'}
-  /global-ids:
-    post:
-      summary: Allocate or resolve an idempotent Global ID mapping
-      responses:
-        '201': {description: Global entity mapping}
-        '403': {description: Administrator required}
-  /global-ids/{id}:
+        '503': {$ref: '#/components/responses/DependencyUnavailable'}
+
+  /api/v1/clients/{id}:
     get:
-      summary: Resolve a Global ID
+      tags: [Business]
+      operationId: getClient
+      summary: Read one normalized client
+      description: |
+        Requires `crm.client.read`, evaluated against this specific resource.
+
+        An unknown Global ID, a Global ID belonging to a different entity type,
+        and a resource a scope-confined caller has not been granted are all
+        answered with the same `404`, so the endpoint cannot be used to
+        discover which identifiers exist or who owns them.
+      parameters:
+        - $ref: '#/components/parameters/GlobalID'
+      responses:
+        '200':
+          description: The resource.
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Client'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '502': {$ref: '#/components/responses/UpstreamUnavailable'}
+        '503': {$ref: '#/components/responses/DependencyUnavailable'}
+
+  /api/v1/contacts/{id}:
+    get:
+      tags: [Business]
+      operationId: getContact
+      summary: Read one normalized contact
+      description: |
+        Requires `crm.client.read`, evaluated against this specific resource.
+
+        An unknown Global ID, a Global ID belonging to a different entity type,
+        and a resource a scope-confined caller has not been granted are all
+        answered with the same `404`, so the endpoint cannot be used to
+        discover which identifiers exist or who owns them.
+
+        `client_id` is reported only when the owning client is already
+        mapped; reading a contact never allocates a Global ID.
+      parameters:
+        - $ref: '#/components/parameters/GlobalID'
+      responses:
+        '200':
+          description: The resource.
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Contact'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '502': {$ref: '#/components/responses/UpstreamUnavailable'}
+        '503': {$ref: '#/components/responses/DependencyUnavailable'}
+
+  /api/v1/projects/{id}:
+    get:
+      tags: [Business]
+      operationId: getProject
+      summary: Read one normalized project
+      description: |
+        Requires `projects.task.read`, evaluated against this specific resource.
+
+        An unknown Global ID, a Global ID belonging to a different entity type,
+        and a resource a scope-confined caller has not been granted are all
+        answered with the same `404`, so the endpoint cannot be used to
+        discover which identifiers exist or who owns them.
+      parameters:
+        - $ref: '#/components/parameters/GlobalID'
+      responses:
+        '200':
+          description: The resource.
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Project'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '502': {$ref: '#/components/responses/UpstreamUnavailable'}
+        '503': {$ref: '#/components/responses/DependencyUnavailable'}
+
+  /api/v1/issues/{id}:
+    get:
+      tags: [Business]
+      operationId: getIssue
+      summary: Read one normalized issue
+      description: |
+        Requires `projects.task.read`, evaluated against this specific resource.
+
+        An unknown Global ID, a Global ID belonging to a different entity type,
+        and a resource a scope-confined caller has not been granted are all
+        answered with the same `404`, so the endpoint cannot be used to
+        discover which identifiers exist or who owns them.
+      parameters:
+        - $ref: '#/components/parameters/GlobalID'
+      responses:
+        '200':
+          description: The resource.
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Issue'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '502': {$ref: '#/components/responses/UpstreamUnavailable'}
+        '503': {$ref: '#/components/responses/DependencyUnavailable'}
+
+  /api/v1/documents/{id}:
+    get:
+      tags: [Business]
+      operationId: getDocument
+      summary: Read one normalized document
+      description: |
+        Requires `wiki.document.read`, evaluated against this specific resource.
+
+        An unknown Global ID, a Global ID belonging to a different entity type,
+        and a resource a scope-confined caller has not been granted are all
+        answered with the same `404`, so the endpoint cannot be used to
+        discover which identifiers exist or who owns them.
+      parameters:
+        - $ref: '#/components/parameters/GlobalID'
+      responses:
+        '200':
+          description: The resource.
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Document'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '502': {$ref: '#/components/responses/UpstreamUnavailable'}
+        '503': {$ref: '#/components/responses/DependencyUnavailable'}
+
+  /api/v1/global-ids:
+    post:
+      tags: [Global IDs]
+      operationId: createGlobalID
+      summary: Allocate or resolve a Global ID mapping
+      description: |
+        Administrator only. The operation is idempotent: mapping the same
+        `(source, entity_type, source_id)` again returns the identifier
+        already allocated. Global IDs are immutable once issued.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/GlobalIDRequest'}
+            example: {entity_type: client, source: espocrm, source_id: acc-northwind, metadata: {name: Northwind Trading}}
+      responses:
+        '201':
+          description: The mapping, newly allocated or already existing.
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/GlobalEntity'}
+        '400': {$ref: '#/components/responses/BadRequest'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '503': {$ref: '#/components/responses/DependencyUnavailable'}
+
+  /api/v1/global-ids/{id}:
+    get:
+      tags: [Global IDs]
+      operationId: resolveGlobalID
+      summary: Resolve a Global ID to its upstream mapping
+      description: Administrator only. Reads are audited.
       parameters:
         - name: id
           in: path
           required: true
-          schema: {type: string}
+          description: The Global ID to resolve.
+          schema: {type: string, pattern: '^[A-Z]+-[0-9]+$'}
+          example: CL-000001
       responses:
-        '200': {description: Mapping}
-        '404': {description: Global ID not found}
-  /audit:
+        '200':
+          description: The mapping.
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/GlobalEntity'}
+              example: {global_id: CL-000001, entity_type: client, source: espocrm, source_id: acc-northwind, created_at: '2026-01-06T11:30:00Z'}
+        '400': {$ref: '#/components/responses/BadRequest'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '503': {$ref: '#/components/responses/DependencyUnavailable'}
+
+  /api/v1/ai/ask:
+    post:
+      tags: [AI]
+      operationId: askAI
+      summary: Ask a question over authorized context
+      description: |
+        Requires `ai.query`, which no role holds by default: who may spend
+        money on a model, and whose data may be put in front of one, is an
+        owner decision rather than a technical default. Administrators reach
+        it through the wildcard.
+
+        **The caller names the records to use.** There is no search, no
+        inference and no "related records": a gateway that assembled its own
+        context would be deciding what a caller may see, and that decision
+        belongs to the authorization evaluator. Each named source is
+        authorized with exactly the permission and scope its own read endpoint
+        uses, so a question reaches the same answer as the same person reading
+        the record directly.
+
+        A source the caller may not use is **refused**, not dropped. Answering
+        from a smaller context would tell them the platform had considered
+        something it had not. An unresolvable source is refused identically,
+        so the gateway cannot be used to probe for identifiers.
+
+        Only normalized platform fields enter the prompt — a name, a status, a
+        severity. No upstream document body or description is ever loaded, and
+        an incident's summary is deliberately left out: those are the parts
+        most likely to contain something nobody decided to send to a model.
+
+        Everything that does go in is redacted, including the caller's own
+        question, because a user pasting a token into a prompt is the likeliest
+        way one reaches a model. Context classified `CREDENTIAL` is refused
+        outright rather than redacted.
+
+        A prompt sent to a provider has left the platform: it may be logged,
+        retained or used for training, which is outside BSYSTEM's control.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/AIRequest'}
+            example:
+              question: Which of these servers has an open incident?
+              sources:
+                - {entity_type: server, global_id: SRV-000001}
+                - {entity_type: incident, global_id: INC-000001}
+      responses:
+        '200':
+          description: The model's answer.
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/AIResponse'}
+        '400':
+          description: |
+            The question is missing or too large, too many sources were named,
+            or a source names an entity type the gateway does not accept.
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Error'}
+              example: {error: question is required}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '403':
+          description: |
+            The caller does not hold `ai.query`, may not use a named source,
+            or asked for context that is credential-classified.
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Error'}
+              example: {error: 'the requested context is credential-classified and cannot be sent to a model', code: credential_context}
+        '503':
+          description: The provider could not be reached, or context assembly failed.
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Error'}
+              example: {error: ai provider unavailable, code: ai_unavailable}
+
+  /api/v1/ai/audit:
     get:
-      summary: List audit events
+      tags: [AI]
+      operationId: listAIRequests
+      summary: List audited AI requests
+      description: |
+        Administrator only. Every gateway call is recorded, answered or
+        refused.
+
+        **The prompt is not stored.** An audit trail is read by more people
+        than the request was, and storing the assembled context would
+        recreate, in one searchable table, exactly the aggregation the
+        authorization rules exist to prevent. What is recorded is who asked,
+        which records they named, what the platform sent it to, the
+        classification shape of the context, and the sizes — enough to answer
+        the questions an audit is for.
       parameters:
         - name: limit
           in: query
+          required: false
           schema: {type: integer, minimum: 1, maximum: 500, default: 100}
       responses:
-        '200': {description: Audit events}
-        '403': {description: Administrator required}
-  /admin/rbac/roles:
+        '200':
+          description: Audited AI requests, newest first.
+          content:
+            application/json:
+              schema:
+                type: array
+                items: {$ref: '#/components/schemas/AIAuditRecord'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '503': {$ref: '#/components/responses/DependencyUnavailable'}
+
+  /api/v1/incidents:
     get:
-      summary: List persistent RBAC roles
+      tags: [Support]
+      operationId: listIncidents
+      summary: List incidents and requests
+      description: |
+        Requires `support.incident.read` across the platform. A principal
+        granted it only inside one scope — a customer with a grant on their
+        own client — is refused here and can still read its own records
+        individually.
+
+        Relations are not loaded for a listing. A list is read to find a
+        record, and fetching every relation for every row would make the
+        common case pay for the uncommon one.
+
+        Every filter value is validated rather than passed through: an unknown
+        one would match nothing, and "no results" is indistinguishable from
+        "none exist" to whoever is reading.
+      parameters:
+        - name: kind
+          in: query
+          required: false
+          schema: {type: string, enum: [incident, request]}
+        - name: status
+          in: query
+          required: false
+          schema: {$ref: '#/components/schemas/SupportStatus'}
+        - name: severity
+          in: query
+          required: false
+          schema: {$ref: '#/components/schemas/SupportSeverity'}
+        - name: client_id
+          in: query
+          required: false
+          schema: {type: string, pattern: '^CL-[0-9]+$'}
+        - name: open
+          in: query
+          required: false
+          description: When `true`, restricts to records that are neither resolved nor closed.
+          schema: {type: boolean, default: false}
+        - name: limit
+          in: query
+          required: false
+          schema: {type: integer, minimum: 1, maximum: 100, default: 25}
+        - name: cursor
+          in: query
+          required: false
+          description: The last Global ID from the previous page.
+          schema: {type: string}
       responses:
-        '200': {description: Roles}
-        '403': {description: Administrator required}
-  /admin/rbac/scopes:
+        '200':
+          description: Support records.
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - {$ref: '#/components/schemas/Collection'}
+                  - type: object
+                    properties:
+                      data:
+                        type: array
+                        items: {$ref: '#/components/schemas/SupportRecord'}
+        '400':
+          description: A filter names a value outside its vocabulary.
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Error'}
+              example: {error: unknown severity, code: invalid_severity}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '503': {$ref: '#/components/responses/DependencyUnavailable'}
+
+    post:
+      tags: [Support]
+      operationId: createIncident
+      summary: Raise an incident or request
+      description: |
+        Requires `support.incident.write`. The record is created as `new` and
+        reported by the calling identity.
+
+        **`severity` is required and has no default.** An unstated severity is
+        a question nobody has answered, and answering it here would pick the
+        response time on the reporter's behalf.
+
+        `client_id` and every relation are verified to resolve before anything
+        is stored. A relation to something the platform cannot identify is a
+        dangling pointer that reads as a fact.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/SupportRequest'}
+            example:
+              kind: incident
+              title: Nightly backup has not run for two days
+              summary: 'Reported by the customer; the job exits immediately.'
+              severity: high
+              client_id: CL-000001
+              relations:
+                - {entity_type: server, global_id: SRV-000001}
+      responses:
+        '201':
+          description: The record was created.
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/SupportRecord'}
+        '400':
+          description: A required field is missing, or a value or relation does not resolve.
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Error'}
+              example: {error: severity must be one of low, medium, high, critical, code: invalid_severity}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '503': {$ref: '#/components/responses/DependencyUnavailable'}
+
+  /api/v1/incidents/{id}:
     get:
-      summary: List scope grants for a principal
+      tags: [Support]
+      operationId: getIncident
+      summary: Read one incident or request
+      description: |
+        Requires `support.incident.read` for this record. A record naming a
+        customer is evaluated against that client, which is where a grant is
+        written; one with no customer is evaluated against itself.
+
+        A record the caller may not read and one that does not exist are
+        answered identically, and the refusal happens before the lookup for
+        anyone who cannot hold the permission at all.
+      parameters:
+        - {$ref: '#/components/parameters/GlobalID'}
+      responses:
+        '200':
+          description: The record, with its relations and derived SLA state.
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/SupportRecord'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '503': {$ref: '#/components/responses/DependencyUnavailable'}
+
+    patch:
+      tags: [Support]
+      operationId: updateIncident
+      summary: Update an incident or request
+      description: |
+        Requires `support.incident.write` for this record. Only the fields
+        present in the body are changed; an omitted field is untouched.
+
+        A status change must follow the lifecycle. `closed` is terminal —
+        reopening it would silently rewrite whatever has already been reported
+        from it — while `resolved` may return to `in_progress`, because a fix
+        that did not hold is the same incident and opening a second record
+        loses the history of the first. A refused move is a `409` naming both
+        ends, since a caller needs to know which move was refused rather than
+        being told the value was wrong when it was not.
+
+        `acknowledged_at` and `resolved_at` are recorded the first time the
+        status reaches them and never moved again, so reopening does not erase
+        that the record was once resolved on time.
+
+        Reaching `resolved` publishes `incident.resolved`; any other change
+        publishes `incident.updated`.
+      parameters:
+        - {$ref: '#/components/parameters/GlobalID'}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/SupportUpdateRequest'}
+            example: {status: in_progress}
+      responses:
+        '200':
+          description: The updated record.
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/SupportRecord'}
+        '400':
+          description: A value is outside its vocabulary, or a relation does not resolve.
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Error'}
+              example: {error: unknown status, code: invalid_status}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '409':
+          description: The status change is not a move the lifecycle allows.
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Error'}
+              example: {error: closed cannot become in_progress, code: invalid_transition}
+        '503': {$ref: '#/components/responses/DependencyUnavailable'}
+
+  /api/v1/servers:
+    get:
+      tags: [Infrastructure]
+      operationId: listServers
+      summary: List servers
+      description: |
+        Requires `operations.server.read` across the platform. A principal
+        granted that permission only inside one scope is refused here and can
+        still read its own servers individually — listing everyone's is a
+        different question from reading your own.
+
+        The cursor is the last Global ID returned rather than an opaque token.
+        It is already a public, immutable identifier the caller has just been
+        given, and encoding it would suggest a position that can drift when it
+        cannot.
+
+        Servers are ordered by Global ID rather than by status or recency,
+        because the order has to stay stable while a page is walked and every
+        other candidate changes whenever a reporter says something.
+      parameters:
+        - name: status
+          in: query
+          required: false
+          schema: {type: string, enum: [ok, warning, error, maintenance, offline, unknown]}
+        - name: environment
+          in: query
+          required: false
+          schema: {type: string, enum: [dev, stage, prod, unknown]}
+        - name: limit
+          in: query
+          required: false
+          schema: {type: integer, minimum: 1, maximum: 100, default: 25}
+        - name: cursor
+          in: query
+          required: false
+          description: The last Global ID from the previous page.
+          schema: {type: string}
+      responses:
+        '200':
+          description: Servers.
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - {$ref: '#/components/schemas/Collection'}
+                  - type: object
+                    properties:
+                      data:
+                        type: array
+                        items: {$ref: '#/components/schemas/Server'}
+              example:
+                data:
+                  - {id: SRV-000001, name: bsystem-app-1, environment: prod, status: ok, client_id: CL-000001, source: bravo, source_id: host-9f2c, last_event_at: '2026-01-06T02:14:00Z', created_at: '2026-01-02T08:00:00Z'}
+                pagination: {total: 1, limit: 1}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '503': {$ref: '#/components/responses/DependencyUnavailable'}
+
+  /api/v1/servers/{id}:
+    get:
+      tags: [Infrastructure]
+      operationId: getServer
+      summary: Read one server
+      description: |
+        Requires `operations.server.read` for this server. A server owned by a
+        customer is evaluated against that client, because that is where a
+        grant would naturally be written — "this customer may see their own
+        infrastructure" is a statement about the customer, not about each
+        machine. A server with no owner is evaluated against itself, so a
+        grant can still name exactly one host.
+
+        A server the caller may not read and one that does not exist are
+        answered identically, so the endpoint cannot be used to enumerate
+        which Global IDs name infrastructure.
+      parameters:
+        - {$ref: '#/components/parameters/GlobalID'}
+      responses:
+        '200':
+          description: The server.
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Server'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '503': {$ref: '#/components/responses/DependencyUnavailable'}
+
+  /api/v1/operations/events:
+    get:
+      tags: [Infrastructure]
+      operationId: listOperationsEvents
+      summary: List operations events
+      description: |
+        Health, backup, self-test and maintenance reports, newest first.
+        Requires `operations.server.read` across the platform.
+
+        An unknown `event` filter is refused rather than ignored: a filter
+        that quietly matched nothing and one that quietly matched everything
+        are both read as "there is nothing".
+      parameters:
+        - name: server_id
+          in: query
+          required: false
+          schema: {type: string, pattern: '^SRV-[0-9]+$'}
+        - name: event
+          in: query
+          required: false
+          schema: {$ref: '#/components/schemas/OperationsEventName'}
+        - name: limit
+          in: query
+          required: false
+          schema: {type: integer, minimum: 1, maximum: 100, default: 25}
+        - name: cursor
+          in: query
+          required: false
+          description: The last event id from the previous page.
+          schema: {type: string}
+      responses:
+        '200':
+          description: Operations events.
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - {$ref: '#/components/schemas/Collection'}
+                  - type: object
+                    properties:
+                      data:
+                        type: array
+                        items: {$ref: '#/components/schemas/OperationsEvent'}
+              example:
+                data:
+                  - {id: 412, server_id: SRV-000001, event: backup.failed, severity: critical, summary: 'nightly backup exited 1', source: bravo, correlation_id: 4f1c2a, occurred_at: '2026-01-06T02:14:00Z'}
+                pagination: {total: 1, limit: 1}
+        '400':
+          description: The event filter names an event outside the vocabulary, or the cursor is malformed.
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Error'}
+              example: {error: unknown operations event, code: invalid_event}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '503': {$ref: '#/components/responses/DependencyUnavailable'}
+
+  /api/v1/search:
+    get:
+      tags: [Search]
+      operationId: search
+      summary: Search normalized entities
+      description: |
+        Searches clients, contacts, projects, issues and documents at once.
+
+        Every result is authorized individually before it is returned. A
+        document declares the permissions that grant read access — any one is
+        enough — and the scope a grant would be written against, and both are
+        evaluated against the caller by the same rules the rest of the
+        platform uses. A scope-confined principal therefore sees a result only
+        where an explicit grant reaches it.
+
+        The route declares no permission, because the decision is per document
+        and a route permission could only be broader than that filter.
+
+        A query shorter than two characters is refused rather than run: one
+        character matches most of an index, and the result would read as a
+        listing rather than a search. An unknown `type` is refused rather than
+        ignored, because dropping it would answer a broader question than the
+        caller asked.
+
+        **There is no total.** The provider knows how many documents matched
+        before authorization was applied, and that number counts records the
+        caller may not be allowed to know exist. A page shorter than `limit`
+        may still carry a `next_cursor` for the same reason: candidates are
+        removed after the provider has counted them.
+
+        A provider failure is a 503, never an empty result. A user told that
+        their search found nothing will act on it.
+      parameters:
+        - name: q
+          in: query
+          required: true
+          description: The search text. At least two characters.
+          schema: {type: string, minLength: 2}
+          example: northwind
+        - name: type
+          in: query
+          required: false
+          description: |
+            Restrict to entity types. Repeat the parameter for several. Omit
+            for every type.
+          schema:
+            type: array
+            items: {type: string, enum: [client, contact, project, issue, document]}
+        - name: limit
+          in: query
+          required: false
+          description: Maximum results to return. Above the maximum is clamped, not refused.
+          schema: {type: integer, minimum: 1, maximum: 50, default: 20}
+        - {$ref: '#/components/parameters/Cursor'}
+      responses:
+        '200':
+          description: Results the caller is authorized to see.
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/SearchCollection'}
+              example:
+                data:
+                  - {id: CL-000001, type: client, title: Northwind Trading, summary: 'Key account', source: espocrm, permissions: [crm.client.read], scope_type: client, scope_id: CL-000001, updated_at: '2026-01-06T09:00:00Z', score: 4}
+                pagination: {limit: 1, next_cursor: czoy}
+        '400':
+          description: |
+            The query is too short, the cursor was not issued by this
+            platform, or an unknown entity type was requested.
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Error'}
+              example: {error: 'unknown entity type: server', code: invalid_type}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '503':
+          description: |
+            The search provider could not be reached, or the authorization
+            store could not answer. Never rendered as an empty result.
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Error'}
+              example: {error: search provider unavailable, code: search_unavailable}
+
+  /api/v1/notifications:
+    get:
+      tags: [Notifications]
+      operationId: listNotifications
+      summary: List the caller's notifications
+      description: |
+        Returns notifications addressed to the caller, newest first.
+
+        A notification is visible when it names the caller's Global user ID,
+        or when it is addressed to a permission the caller holds. An
+        administrator sees every audience. A scope-confined principal — the
+        Customer role today — sees only notifications addressed to it by name:
+        its role permissions describe what it may do inside scopes it has been
+        granted, so treating them as an audience would disclose platform-wide
+        notifications across the tenant boundary.
+
+        The route declares no permission because the audience filter is
+        applied in the query against the same principal the rest of the
+        platform authorizes: a route permission could only be broader than
+        that filter, never narrower.
+
+        `total` and `unread_count` describe everything visible to the caller,
+        not the current page, so an unread badge does not have to walk the
+        whole history to draw a number.
+      parameters:
+        - {$ref: '#/components/parameters/Limit'}
+        - {$ref: '#/components/parameters/Cursor'}
+        - name: unread
+          in: query
+          required: false
+          description: When `true`, returns only notifications the caller has not marked read.
+          schema: {type: boolean, default: false}
+      responses:
+        '200':
+          description: The caller's notifications.
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/NotificationCollection'}
+              example:
+                data:
+                  - {id: 91, event: backup.failed, source: operations, severity: critical, title: Backup failed, body: 'nightly backup exited 1', entity_id: SRV-000004, audience_permission: operations.server.read, correlation_id: 4f1c2a, occurred_at: '2026-01-06T02:14:00Z', read: false}
+                pagination: {total: 3, limit: 1, next_cursor: bjo5MQ}
+                unread_count: 2
+        '400': {$ref: '#/components/responses/BadRequest'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '503': {$ref: '#/components/responses/DependencyUnavailable'}
+
+  /api/v1/notifications/{id}/read:
+    post:
+      tags: [Notifications]
+      operationId: markNotificationRead
+      summary: Mark a notification read
+      description: |
+        Records that the caller has read a notification. Read state is per
+        user, so marking an audience notification read does not hide it from
+        anyone else.
+
+        A notification the caller may not see is answered exactly as one that
+        does not exist. Distinguishing them would let a caller enumerate
+        notification identifiers belonging to other people.
+
+        The call is idempotent: marking an already-read notification succeeds.
+      parameters:
+        - name: id
+          in: path
+          required: true
+          description: The notification's identifier.
+          schema: {type: integer, format: int64, minimum: 1}
+      responses:
+        '204': {description: The notification is marked read.}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '503': {$ref: '#/components/responses/DependencyUnavailable'}
+
+  /api/v1/audit:
+    get:
+      tags: [Administration]
+      operationId: listAuditEvents
+      summary: List audit events
+      description: Administrator only. The audit trail records who read and changed what.
+      parameters:
+        - name: limit
+          in: query
+          required: false
+          description: Maximum events to return, newest first.
+          schema: {type: integer, minimum: 1, maximum: 500, default: 100}
+      responses:
+        '200':
+          description: Audit events.
+          content:
+            application/json:
+              schema:
+                type: array
+                items: {$ref: '#/components/schemas/AuditEvent'}
+              example:
+                - {id: 42, occurred_at: '2026-01-06T11:30:00Z', subject: ak-user-9f2c, global_user_id: USR-000001, action: global_id.created, resource_type: client, resource_id: CL-000001, request_id: 4f1c2a, source_ip: 10.0.0.7}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '503': {$ref: '#/components/responses/DependencyUnavailable'}
+
+  /api/v1/admin/rbac/roles:
+    get:
+      tags: [Administration]
+      operationId: listRoles
+      summary: List persistent RBAC roles
+      description: Administrator only.
+      responses:
+        '200':
+          description: Roles with their permissions and modules.
+          content:
+            application/json:
+              schema:
+                type: array
+                items: {$ref: '#/components/schemas/Role'}
+              example:
+                - {id: developer, name: Developer, kind: human, description: Development and project work, enabled: true, permissions: [projects.task.read], modules: [projects]}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '503': {$ref: '#/components/responses/DependencyUnavailable'}
+
+  /api/v1/admin/rbac/scopes:
+    get:
+      tags: [Administration]
+      operationId: listScopeGrants
+      summary: List the scope grants held by a principal
+      description: Administrator only.
       parameters:
         - name: principal_type
           in: query
           required: true
-          schema: {type: string, enum: [user, service]}
+          schema: {type: string, enum: [user, service, group]}
+          example: user
         - name: principal_id
           in: query
           required: true
+          description: The principal's Global ID, or the group name for a group principal.
           schema: {type: string}
+          example: USR-000001
       responses:
-        '200': {description: Scope grants}
+        '200':
+          description: Scope grants.
+          content:
+            application/json:
+              schema:
+                type: array
+                items: {$ref: '#/components/schemas/ScopeGrant'}
+        '400': {$ref: '#/components/responses/BadRequest'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '503': {$ref: '#/components/responses/DependencyUnavailable'}
     post:
-      summary: Grant a scoped permission
+      tags: [Administration]
+      operationId: grantScope
+      summary: Grant a scoped permission to a principal
+      description: Administrator only. The grant is audited.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/ScopeGrant'}
+            example: {principal_type: user, principal_id: USR-000001, scope_type: project, scope_id: PR-000001, permission_id: projects.task.read}
       responses:
-        '201': {description: Scope grant created}
+        '201':
+          description: The grant created.
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/ScopeGrant'}
+        '400': {$ref: '#/components/responses/BadRequest'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '503': {$ref: '#/components/responses/DependencyUnavailable'}
     delete:
-      summary: Revoke a scoped permission
+      tags: [Administration]
+      operationId: revokeScope
+      summary: Revoke a scoped permission from a principal
+      description: Administrator only. The revocation is audited.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/ScopeGrant'}
       responses:
-        '200': {description: Scope grant revoked}
+        '200':
+          description: The grant revoked.
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/ScopeGrant'}
+        '400': {$ref: '#/components/responses/BadRequest'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '503': {$ref: '#/components/responses/DependencyUnavailable'}
+
+  /api/service/v1/whoami:
+    get:
+      tags: [Service]
+      operationId: serviceWhoAmI
+      summary: Return the authenticated service identity
+      description: |
+        Allocates the caller's `SVC-*` Global ID on first sight and returns it
+        unchanged afterwards. A human token is refused here, and a token
+        outside `BSYSTEM-Services` is refused too.
+      security:
+        - serviceAuth: []
+      responses:
+        '200':
+          description: The service principal and its resolved authorization.
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/ServicePrincipal'}
+              example:
+                id: SVC-000001
+                subject: ak-service-3b7d
+                name: BSYSTEM Core Service
+                username: svc-core
+                groups: [BSYSTEM-Services]
+                roles: [Service Core]
+                permissions: [adapters.read, events.publish, global_ids.read]
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '403': {$ref: '#/components/responses/ServiceForbidden'}
+        '503': {$ref: '#/components/responses/DependencyUnavailable'}
+
+  /api/service/v1/adapters:
+    get:
+      tags: [Service]
+      operationId: listAdapters
+      summary: List the registered upstream adapters
+      description: Requires `adapters.read`.
+      security:
+        - serviceAuth: []
+      responses:
+        '200':
+          description: Adapter registry contents.
+          content:
+            application/json:
+              schema:
+                type: array
+                items: {$ref: '#/components/schemas/AdapterInfo'}
+              example:
+                - {id: espocrm, name: EspoCRM, version: '1', status: ready, capabilities: [clients.read, contacts.read]}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '403': {$ref: '#/components/responses/ServiceForbidden'}
+
+  /api/service/v1/adapters/health:
+    get:
+      tags: [Service]
+      operationId: getAdapterHealth
+      summary: Probe every registered adapter
+      description: Requires `adapters.read`. Messages are credential-safe.
+      security:
+        - serviceAuth: []
+      responses:
+        '200':
+          description: Per-adapter health, keyed by adapter id.
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: {$ref: '#/components/schemas/AdapterHealth'}
+              example:
+                espocrm: {status: ready}
+                redmine: {status: ready}
+                outline: {status: degraded, message: HTTP 429}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '403': {$ref: '#/components/responses/ServiceForbidden'}
+
+  /api/service/v1/events:
+    post:
+      tags: [Service]
+      operationId: publishEvent
+      summary: Publish a normalized platform event
+      description: |
+        Requires `events.publish`. The envelope is normalized before
+        publication and delivered on `bsystem.events.<event>`. `actor_id` and
+        `request_id` are filled from the calling identity and the request
+        correlation id when the caller omits them.
+      security:
+        - serviceAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/EventEnvelope'}
+            example: {event: backup.failed, source: bsystem-operations, entity_id: SRV-000004, severity: error, data: {job: nightly}}
+      responses:
+        '202':
+          description: The normalized envelope, as published.
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/EventEnvelope'}
+        '400': {$ref: '#/components/responses/BadRequest'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '403': {$ref: '#/components/responses/ServiceForbidden'}
+        '503':
+          description: The event bus is unavailable.
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Error'}
+
+  /api/service/v1/notifications:
+    post:
+      tags: [Service]
+      operationId: publishNotification
+      summary: Raise a notification
+      description: |
+        Raises a notification directly, for a publisher that already knows who
+        it concerns. Requires the `notifications.publish` permission, which no
+        human role holds: a notification is the platform stating that
+        something happened, not a message one user sends another.
+
+        Exactly one of `recipient_id` and `audience_permission` must be set.
+        Both are validated before the notification is stored — an unknown
+        Global user ID or an undefined permission is refused rather than
+        accepted, because a notification nobody can read is not a
+        notification, and reporting success for one would be a lie.
+
+        `severity` is a floor of `info`: a publisher may escalate but the
+        platform never records less than it knows.
+
+        Most notifications are not raised this way. A mapped platform event
+        published to `/api/service/v1/events` raises one automatically; see
+        `docs/NOTIFICATIONS.md` for the mapping table.
+      security:
+        - serviceAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/NotificationRequest'}
+            example: {audience_permission: operations.server.read, severity: critical, title: Backup failed, body: 'nightly backup exited 1', entity_id: SRV-000004, source: operations}
+      responses:
+        '201':
+          description: The notification was raised.
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Notification'}
+        '400': {$ref: '#/components/responses/BadRequest'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '403': {$ref: '#/components/responses/ServiceForbidden'}
+        '503': {$ref: '#/components/responses/DependencyUnavailable'}
+
+  /api/service/v1/search/documents:
+    post:
+      tags: [Service]
+      operationId: indexSearchDocuments
+      summary: Index or update search documents
+      description: |
+        Upserts normalized search documents, keyed by Global ID, so replaying
+        a request converges rather than duplicating. Requires `search.index`,
+        which no human role holds.
+
+        A document carries no upstream payload: `title` and `summary` are the
+        only text, and both must be safe to show to anyone who passes the
+        document's own authorization. A search index is read by more people
+        than any single endpoint, and copying a source record into it would
+        put upstream fields in front of all of them.
+
+        `permissions` must name at least one permission and `scope_type` and
+        `scope_id` must name the scope a grant would be written against. A
+        document with no permissions is refused rather than stored: it would
+        be indexed and never returned, and the publisher should learn that now
+        rather than when somebody reports results missing.
+
+        The whole batch is rejected when any document is invalid, so the index
+        is never left half-applied.
+      security:
+        - serviceAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [documents]
+              properties:
+                documents:
+                  type: array
+                  minItems: 1
+                  items: {$ref: '#/components/schemas/SearchDocument'}
+            example:
+              documents:
+                - {id: CL-000001, type: client, title: Northwind Trading, summary: 'Key account', source: espocrm, permissions: [crm.client.read], scope_type: client, scope_id: CL-000001, updated_at: '2026-01-06T09:00:00Z'}
+      responses:
+        '202':
+          description: The documents were accepted.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  indexed: {type: integer}
+              example: {indexed: 1}
+        '400': {$ref: '#/components/responses/BadRequest'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '403': {$ref: '#/components/responses/ServiceForbidden'}
+        '503': {$ref: '#/components/responses/DependencyUnavailable'}
+
+  /api/service/v1/search/documents/{id}:
+    delete:
+      tags: [Service]
+      operationId: deleteSearchDocument
+      summary: Remove a search document
+      description: |
+        Removes a document from the index. Requires `search.index`.
+
+        Removing a document that was never indexed succeeds. The caller's
+        intent — that this should not be searchable — is satisfied either way,
+        and answering 404 would make a replayed delete look like a failure.
+      security:
+        - serviceAuth: []
+      parameters:
+        - {$ref: '#/components/parameters/GlobalID'}
+      responses:
+        '204': {description: The document is not in the index.}
+        '400': {$ref: '#/components/responses/BadRequest'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '403': {$ref: '#/components/responses/ServiceForbidden'}
+        '503': {$ref: '#/components/responses/DependencyUnavailable'}
+
+  /api/service/v1/servers:
+    post:
+      tags: [Service]
+      operationId: registerServer
+      summary: Register or update a server
+      description: |
+        Registers a server from its reporter, or updates one already
+        registered. Requires `operations.report`, which no human role holds: a
+        person does not assert that a host exists, a reporter does.
+
+        The Global ID is allocated by the platform and keyed by the reporter's
+        own identifier, so re-registering the same host returns the same
+        `SRV-*` rather than minting another. `client_id` and `project_id` are
+        verified to resolve before anything is stored — an operations record
+        attached to the wrong customer is worse than one attached to none.
+
+        **Status is not settable here.** It is a consequence of reported
+        events; letting a registration set it would let a reporter declare a
+        server healthy without saying anything happened.
+      security:
+        - serviceAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/ServerRequest'}
+            example: {source: bravo, source_id: host-9f2c, name: bsystem-app-1, environment: prod, client_id: CL-000001}
+      responses:
+        '200':
+          description: The registered server.
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Server'}
+        '400':
+          description: A required field is missing, the environment is unknown, or a relation does not resolve.
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Error'}
+              example: {error: client_id does not name a known client, code: invalid_relation}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '403': {$ref: '#/components/responses/ServiceForbidden'}
+        '503': {$ref: '#/components/responses/DependencyUnavailable'}
+
+  /api/service/v1/operations/events:
+    post:
+      tags: [Service]
+      operationId: reportOperationsEvent
+      summary: Report an operations event
+      description: |
+        Records one thing that happened to a server. Requires
+        `operations.report`.
+
+        The event vocabulary is closed. A name outside it is refused rather
+        than stored, because an operations feed that accepts anything becomes
+        a log, and nobody can write a query or a notification rule against a
+        log whose contents are unbounded.
+
+        `severity` is a floor: a reporter may escalate an event it knows is
+        worse than usual, but cannot lower one the platform treats as
+        critical.
+
+        Only `summary` is stored as text. A reporter's full payload can carry
+        credentials, addresses and command output, and this record is read by
+        everyone holding `operations.server.read`.
+
+        A report may move the server's status — see `docs/OPERATIONS.md` for
+        which do and why a failed backup does not.
+
+        The report becomes a platform event on `bsystem.events.<event>` and,
+        where people are interrupted by it, a notification. Both are best
+        effort: the report is already stored, and losing it to make a
+        secondary effect look atomic would be the worse trade.
+      security:
+        - serviceAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/OperationsEventRequest'}
+            example: {server_id: SRV-000001, event: backup.failed, summary: 'nightly backup exited 1', source: bravo}
+      responses:
+        '202':
+          description: The report was recorded.
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/OperationsEvent'}
+        '400':
+          description: The event is outside the vocabulary, or `server_id` names no registered server.
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Error'}
+              example: {error: unknown operations event, code: invalid_event}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '403': {$ref: '#/components/responses/ServiceForbidden'}
+        '503': {$ref: '#/components/responses/DependencyUnavailable'}
+
 components:
   securitySchemes:
     bearerAuth:
       type: http
       scheme: bearer
       bearerFormat: OAuth2 access token
+      description: A human access token issued by authentik.
+    serviceAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: OAuth2 access token
+      description: |
+        A service identity access token issued by authentik. The identity must
+        be a member of `BSYSTEM-Services`.
+
   parameters:
+    GlobalID:
+      name: id
+      in: path
+      required: true
+      description: The resource's immutable platform Global ID.
+      schema: {type: string, pattern: '^[A-Z]+-[0-9]+$'}
+      example: CL-000001
     Limit:
       name: limit
       in: query
+      required: false
+      description: |
+        Maximum items to return. A value above the maximum is clamped rather
+        than rejected, so a caller asking for more than the platform serves
+        gets the maximum. The cap is what stops one request pulling an
+        unbounded amount of upstream data.
+
+        The effective maximum depends on the source system: 200 for CRM
+        collections, 100 for project and document collections.
       schema: {type: integer, minimum: 1, maximum: 200, default: 50}
+    Cursor:
+      name: cursor
+      in: query
+      required: false
+      description: |
+        An opaque position taken from a previous response's
+        `pagination.next_cursor`. Omit it for the first page.
+
+        Cursors must not be constructed or parsed by callers: the encoding is
+        an implementation detail and will change when a source system gains
+        real cursors. A cursor the platform did not issue is rejected with
+        `invalid_cursor` rather than reinterpreted.
+      schema: {type: string}
+
   responses:
-    UpstreamUnavailable:
-      description: Upstream adapter failed
+    BadRequest:
+      description: |
+        The request is malformed, missing a required field, or carries a
+        pagination cursor the platform did not issue.
       content:
         application/json:
-          schema:
-            $ref: '#/components/schemas/UpstreamError'
+          schema: {$ref: '#/components/schemas/Error'}
+          example: {error: invalid pagination cursor, code: invalid_cursor}
+    Unauthorized:
+      description: The access token is missing, invalid or expired.
+      content:
+        application/json:
+          schema: {$ref: '#/components/schemas/Error'}
+          example: {error: invalid or expired token}
+    Forbidden:
+      description: |
+        The caller is authenticated but is not authorized.
+
+        `permission_required` means the caller does not hold the permission.
+        `scope_required` means the caller holds it but may only exercise it
+        inside a scope they have been granted, and no grant matches.
+
+        The body names the missing permission and nothing else: it never
+        discloses whether the resource exists or who owns it.
+      content:
+        application/json:
+          schema: {$ref: '#/components/schemas/Error'}
+          example: {error: crm.client.read permission required, code: permission_required}
+    ServiceForbidden:
+      description: |
+        The token is not a service identity in `BSYSTEM-Services`, or the
+        identity lacks the required permission.
+      content:
+        application/json:
+          schema: {$ref: '#/components/schemas/Error'}
+          example: {error: service identity group required}
+    NotFound:
+      description: |
+        The resource does not exist, or the caller may not learn that it does.
+        The two are deliberately indistinguishable.
+      content:
+        application/json:
+          schema: {$ref: '#/components/schemas/Error'}
+          example: {error: resource not found, code: not_found}
+    UpstreamUnavailable:
+      description: |
+        The upstream system failed, rate-limited the platform or timed out.
+        Upstream status codes, hostnames, credentials and payloads are never
+        forwarded; the failing system is named only by its adapter id.
+      content:
+        application/json:
+          schema: {$ref: '#/components/schemas/Error'}
+          example: {error: upstream service unavailable, code: upstream_unavailable, source: espocrm}
+    DependencyUnavailable:
+      description: A platform dependency, such as the database, is unavailable.
+      content:
+        application/json:
+          schema: {$ref: '#/components/schemas/Error'}
+          example: {error: RBAC store unavailable}
+
   schemas:
-    UpstreamError:
+    Collection:
       type: object
-      required: [error, code, source]
+      description: |
+        The envelope every normalized collection returns. `data` holds the
+        current page; `pagination` says how to continue.
+      required: [data, pagination]
       properties:
-        error: {type: string, const: upstream service unavailable}
-        code: {type: string, const: upstream_unavailable}
+        data:
+          type: array
+          items: {}
+        pagination: {$ref: '#/components/schemas/Pagination'}
+
+    Pagination:
+      type: object
+      description: |
+        Describes the returned window. A caller walks a collection by
+        following `next_cursor` until it is absent; it is never present on the
+        final page, so the walk always terminates.
+      required: [total, limit]
+      properties:
+        total:
+          type: integer
+          description: |
+            The size of the whole collection as the source system reports it,
+            not the size of this page.
+        limit:
+          type: integer
+          description: The number of items actually returned in this page.
+        next_cursor:
+          type: string
+          description: |
+            Opaque position of the following page. Absent once the collection
+            is exhausted.
+      examples:
+        - {total: 42, limit: 50, next_cursor: bzo1MA}
+
+    AISource:
+      type: object
+      required: [entity_type, global_id]
+      properties:
+        entity_type:
+          type: string
+          enum: [client, contact, project, task, document, server, incident]
+        global_id: {type: string}
+
+    AIRequest:
+      type: object
+      required: [question]
+      properties:
+        question:
+          type: string
+          maxLength: 4000
+          description: Redacted before it reaches a provider, like everything else.
+        sources:
+          type: array
+          maxItems: 20
+          items: {$ref: '#/components/schemas/AISource'}
+          description: |
+            The records the gateway may use. Each is authorized individually.
+            Omitting them asks a question with no platform context at all.
+
+    AIResponse:
+      type: object
+      required: [answer, provider, model, classification, used_sources]
+      properties:
+        answer: {type: string}
+        provider: {type: string, description: 'The provider that answered: fake, ollama or openai.'}
+        model: {type: string}
+        classification:
+          type: string
+          enum: [PUBLIC, INTERNAL, CONFIDENTIAL, SECRET]
+          description: |
+            The highest classification among the context used. `CREDENTIAL`
+            never appears: such a request is refused rather than answered.
+        used_sources:
+          type: array
+          items: {type: string}
+          description: The Global IDs that entered the prompt.
+        request_id: {type: string}
+
+    AIAuditRecord:
+      type: object
+      description: |
+        One audited gateway call. There is no prompt or answer text, by
+        design — see the endpoint description.
+      required: [id, occurred_at, actor_id, provider, model, result]
+      properties:
+        id: {type: integer, format: int64}
+        occurred_at: {type: string, format: date-time}
+        actor_id: {type: string, pattern: '^USR-[0-9]+$'}
+        provider: {type: string}
+        model: {type: string}
+        requested_sources:
+          type: array
+          items: {type: string}
+          description: What the caller asked for, as `entity_type:global_id`.
+        entity_ids:
+          type: array
+          items: {type: string}
+          description: What actually entered the prompt.
+        classification:
+          type: object
+          description: The overall level and a count per level. Never content.
+        request_id: {type: string}
+        result:
+          type: string
+          enum: [answered, refused_credential, refused_unauthorized, refused_too_large, failed]
+        prompt_bytes: {type: integer}
+        answer_bytes: {type: integer}
+        duration_ms: {type: integer}
+
+    SupportStatus:
+      type: string
+      enum: [new, acknowledged, in_progress, resolved, closed]
+
+    SupportSeverity:
+      type: string
+      enum: [low, medium, high, critical]
+      description: |
+        Deliberately not the platform's event severity scale. An event
+        severity describes what happened; an incident severity is a statement
+        about how quickly somebody will respond, which is what an SLA is keyed
+        on.
+
+    SupportRelation:
+      type: object
+      required: [entity_type, global_id]
+      properties:
+        entity_type:
+          type: string
+          enum: [client, server, project, task, bug, document]
+        global_id: {type: string}
+
+    SupportSLA:
+      type: object
+      description: |
+        The record's state against its SLA target, computed on read because it
+        is a function of the clock — a stored value would be wrong from the
+        moment it was written.
+      required: [state]
+      properties:
+        state:
+          type: string
+          enum: [unset, on_track, at_risk, breached, met]
+          description: |
+            `unset` means no SLA target is configured for this severity, so
+            the platform makes no claim about when anything is due. It is
+            distinct from `on_track` on purpose: a customer reading "on track"
+            has been told a promise is being kept, and there is no promise.
+
+            A resolved record's state stops moving, so a report written later
+            does not show every closed incident as breached.
+        respond_by:
+          type: string
+          format: date-time
+          description: Absent when no target is configured.
+        resolve_by:
+          type: string
+          format: date-time
+          description: Absent when no target is configured.
+
+    SupportRecord:
+      type: object
+      required: [id, kind, title, severity, status, reported_by, created_at, updated_at, relations, sla]
+      properties:
+        id: {type: string, pattern: '^INC-[0-9]+$'}
+        kind: {type: string, enum: [incident, request]}
+        title: {type: string}
+        summary: {type: string}
+        severity: {$ref: '#/components/schemas/SupportSeverity'}
+        status: {$ref: '#/components/schemas/SupportStatus'}
+        client_id:
+          type: string
+          description: |
+            The affected customer. This is what a scope grant is written
+            against, so a customer can see their own records and no others.
+        relations:
+          type: array
+          items: {$ref: '#/components/schemas/SupportRelation'}
+          description: Empty in a listing; populated on a detail read.
+        reported_by: {type: string, pattern: '^USR-[0-9]+$'}
+        created_at: {type: string, format: date-time}
+        updated_at: {type: string, format: date-time}
+        acknowledged_at:
+          type: string
+          format: date-time
+          description: Recorded the first time the status left `new`, and never moved again.
+        resolved_at:
+          type: string
+          format: date-time
+          description: Recorded the first time the record was resolved or closed, and never moved again.
+        sla: {$ref: '#/components/schemas/SupportSLA'}
+
+    SupportRequest:
+      type: object
+      required: [title, severity]
+      properties:
+        kind: {type: string, enum: [incident, request], default: incident}
+        title: {type: string}
+        summary: {type: string}
+        severity: {$ref: '#/components/schemas/SupportSeverity'}
+        client_id: {type: string}
+        relations:
+          type: array
+          items: {$ref: '#/components/schemas/SupportRelation'}
+
+    SupportUpdateRequest:
+      type: object
+      description: Only the fields present are changed.
+      properties:
+        title: {type: string}
+        summary: {type: string}
+        severity: {$ref: '#/components/schemas/SupportSeverity'}
+        status: {$ref: '#/components/schemas/SupportStatus'}
+        relations:
+          type: array
+          items: {$ref: '#/components/schemas/SupportRelation'}
+          description: Replaces the whole set when present.
+
+    Server:
+      type: object
+      description: |
+        A normalized infrastructure host.
+
+        It carries no hostname, address or any other way to reach the machine.
+        The platform never connects to a server, and an inventory of reachable
+        addresses is internal topology that should not accumulate somewhere
+        more people can read than can log in. `name` is a label for humans;
+        identity is the Global ID.
+      required: [id, name, environment, status, source, source_id, created_at]
+      properties:
+        id: {type: string, pattern: '^SRV-[0-9]+$'}
+        name: {type: string}
+        environment: {type: string, enum: [dev, stage, prod, unknown]}
+        status:
+          type: string
+          enum: [ok, warning, error, maintenance, offline, unknown]
+          description: |
+            The last state a reported event implied. `unknown` until something
+            is reported that says whether the server is up.
+        client_id: {type: string, description: The owning customer, when the server has one.}
+        project_id: {type: string}
         source: {type: string}
+        source_id: {type: string}
+        last_event_at:
+          type: string
+          format: date-time
+          description: |
+            When the server was last reported on at all. Absent until the
+            first report; a stale value is how an operator learns a reporter
+            has gone quiet.
+        created_at: {type: string, format: date-time}
+
+    ServerRequest:
+      type: object
+      required: [source, source_id, name]
+      properties:
+        source: {type: string}
+        source_id:
+          type: string
+          description: The reporter's own identifier, which keys the Global ID allocation.
+        name: {type: string}
+        environment:
+          type: string
+          enum: [dev, stage, prod, unknown]
+          default: unknown
+          description: |
+            Omitted means `unknown`. A reporter that does not say must not be
+            recorded as production, and must not be recorded as a lab either.
+        client_id: {type: string}
+        project_id: {type: string}
+
+    OperationsEventName:
+      type: string
+      enum:
+        - backup.succeeded
+        - backup.failed
+        - selftest.succeeded
+        - selftest.failed
+        - maintenance.started
+        - maintenance.completed
+        - server.ok
+        - server.warning
+        - server.error
+        - server.offline
+
+    OperationsEvent:
+      type: object
+      required: [id, server_id, event, severity, source, occurred_at]
+      properties:
+        id: {type: integer, format: int64}
+        server_id: {type: string, pattern: '^SRV-[0-9]+$'}
+        event: {$ref: '#/components/schemas/OperationsEventName'}
+        severity: {type: string, enum: [debug, info, warning, error, critical]}
+        summary:
+          type: string
+          description: |
+            A short human-readable line. The only free text stored, because
+            this record is read by everyone holding `operations.server.read`.
+        source: {type: string}
+        correlation_id: {type: string}
+        occurred_at: {type: string, format: date-time}
+
+    OperationsEventRequest:
+      type: object
+      required: [server_id, event, source]
+      properties:
+        server_id: {type: string, pattern: '^SRV-[0-9]+$'}
+        event: {$ref: '#/components/schemas/OperationsEventName'}
+        severity:
+          type: string
+          enum: [debug, info, warning, error, critical]
+          description: A floor, not a value. A reporter may escalate but not lower.
+        summary: {type: string}
+        occurred_at:
+          type: string
+          format: date-time
+          description: Defaults to the time the report was received.
+        source: {type: string}
+
+    SearchCollection:
+      type: object
+      description: |
+        A page of search results. It carries no total: see the endpoint
+        description.
+      required: [data, pagination]
+      properties:
+        data:
+          type: array
+          items: {$ref: '#/components/schemas/SearchHit'}
+        pagination:
+          type: object
+          required: [limit]
+          properties:
+            limit:
+              type: integer
+              description: The number of results actually returned.
+            next_cursor:
+              type: string
+              description: |
+                Opaque position of the following page, absent once the results
+                are exhausted. It can be present on a page shorter than the
+                requested limit, because the authorization filter removes
+                candidates the provider has already counted.
+
+    SearchHit:
+      allOf:
+        - {$ref: '#/components/schemas/SearchDocument'}
+        - type: object
+          properties:
+            score:
+              type: number
+              description: |
+                The provider's relevance score. It is comparable within one
+                response and meaningless between responses or between
+                providers.
+
+    SearchDocument:
+      type: object
+      required: [id, type, title, source, permissions, scope_type, scope_id]
+      properties:
+        id:
+          type: string
+          description: The platform Global ID, which is also the index key.
+          example: CL-000001
+        type:
+          type: string
+          enum: [client, contact, project, issue, document]
+        title: {type: string}
+        summary:
+          type: string
+          description: |
+            Short human-readable detail. Along with the title, the only
+            searchable text, and the only content the index holds.
+        source: {type: string}
+        tenant_id: {type: string}
+        permissions:
+          type: array
+          minItems: 1
+          items: {type: string}
+          description: |
+            Permissions that grant read access; any one is enough. An empty
+            list is refused, because it would index a document nobody could
+            ever see.
+        scope_type:
+          type: string
+          enum: [global, tenant, client, project, resource]
+          description: |
+            The scope a grant would be written against, used when the caller's
+            role is scope-confined.
+        scope_id: {type: string}
+        updated_at: {type: string, format: date-time}
+
+    NotificationCollection:
+      type: object
+      description: |
+        A page of notifications, with the counts of everything visible to the
+        caller rather than of the page.
+      required: [data, pagination, unread_count]
+      properties:
+        data:
+          type: array
+          items: {$ref: '#/components/schemas/Notification'}
+        pagination: {$ref: '#/components/schemas/Pagination'}
+        unread_count:
+          type: integer
+          description: Notifications visible to the caller that they have not marked read.
+
+    Notification:
+      type: object
+      required: [id, event, source, severity, title, occurred_at, read]
+      properties:
+        id: {type: integer, format: int64}
+        event:
+          type: string
+          description: The platform event that raised it, in `entity.action` form.
+        source: {type: string}
+        severity:
+          type: string
+          enum: [debug, info, warning, error, critical]
+        title: {type: string}
+        body:
+          type: string
+          description: |
+            Human-readable detail. When a notification is raised from an
+            event, only the event's `data.message` is carried: copying a whole
+            upstream payload would place potentially confidential data in
+            front of everyone holding the audience permission.
+        deep_link:
+          type: string
+          description: |
+            A HUB path for the entity, or absent when the HUB has no page for
+            it. Operational and support entities have none until those areas
+            of the HUB exist; an absent link is better than one that leads
+            nowhere.
+        entity_id:
+          type: string
+          description: The Global ID the notification concerns.
+        tenant_id: {type: string}
+        recipient_id:
+          type: string
+          description: The Global user ID this notification names, when it addresses one person.
+        audience_permission:
+          type: string
+          description: |
+            The permission this notification addresses, when it addresses a
+            role rather than a person. Membership is resolved from RBAC at
+            read time, so revoking access also withdraws the notification.
+        correlation_id:
+          type: string
+          description: The `X-Request-ID` of the request that raised it.
+        occurred_at: {type: string, format: date-time}
+        read:
+          type: boolean
+          description: Whether this caller has marked it read. Read state is per user.
+
+    NotificationRequest:
+      type: object
+      required: [title, source]
+      properties:
+        recipient_id:
+          type: string
+          description: A known Global user ID. Mutually exclusive with `audience_permission`.
+        audience_permission:
+          type: string
+          description: A permission defined in RBAC. Mutually exclusive with `recipient_id`.
+        severity:
+          type: string
+          enum: [debug, info, warning, error, critical]
+          default: info
+        title: {type: string}
+        body: {type: string}
+        entity_id: {type: string}
+        tenant_id: {type: string}
+        source: {type: string}
+        event:
+          type: string
+          description: Defaults to `notification.raised` when the publisher names none.
+
+    Error:
+      type: object
+      description: |
+        The single error shape for every failure. `error` is always present
+        and human-readable; `code` is the stable machine-readable form where
+        one is defined. No field ever carries a credential, an internal
+        hostname, a stack trace or an upstream payload.
+      required: [error]
+      properties:
+        error: {type: string, description: Human-readable summary.}
+        code:
+          type: string
+          description: |
+            Stable machine-readable code. A caller should branch on this
+            rather than on the human-readable summary, which may change.
+
+            `upstream_unavailable` — a source system failed, timed out or
+            rate-limited the platform.
+            `permission_required` — the caller does not hold the permission.
+            `scope_required` — the caller holds it but may only exercise it
+            inside a scope they have been granted, and no grant matches.
+            `not_found` — the resource does not exist, or the caller may not
+            learn that it does.
+            `invalid_cursor` — the pagination cursor was not issued by this
+            platform.
+            `invalid_query` — the search text is too short to run.
+            `invalid_type` — an unknown entity type was requested.
+            `invalid_document` — a search document cannot be indexed as given.
+            `search_unavailable` — the search provider could not be reached.
+            This is never rendered as an empty result.
+            `invalid_event` — an operations event outside the platform's
+            vocabulary.
+            `invalid_environment` — an unrecognised deployment environment.
+            `invalid_relation` — a Global ID that does not resolve, or does
+            not name an entity of the expected type.
+            `invalid_kind`, `invalid_severity`, `invalid_status` — a support
+            value outside its vocabulary.
+            `invalid_transition` — a status change the support lifecycle does
+            not allow.
+            `invalid_source` — an AI source names an entity type the gateway
+            does not accept.
+            `source_forbidden` — the caller may not use a named source as
+            context, or it does not resolve. The two are the same answer.
+            `credential_context` — the requested context is
+            credential-classified and cannot be sent to a model.
+            `prompt_too_large`, `too_many_sources` — the request exceeds the
+            gateway's bounds.
+            `ai_unavailable` — the model provider could not be reached.
+          enum:
+            - upstream_unavailable
+            - scope_required
+            - permission_required
+            - not_found
+            - invalid_cursor
+            - invalid_query
+            - invalid_type
+            - invalid_document
+            - search_unavailable
+            - invalid_event
+            - invalid_environment
+            - invalid_relation
+            - invalid_kind
+            - invalid_severity
+            - invalid_status
+            - invalid_transition
+            - invalid_source
+            - source_forbidden
+            - credential_context
+            - prompt_too_large
+            - too_many_sources
+            - ai_unavailable
+        source:
+          type: string
+          description: The adapter id of the failing upstream, when applicable.
+        request_id:
+          type: string
+          description: Correlation id, matching the `X-Request-ID` response header.
+      examples:
+        - {error: upstream service unavailable, code: upstream_unavailable, source: redmine}
+
+    Health:
+      type: object
+      required: [status, service, version, timestamp, checks]
+      properties:
+        status: {type: string, enum: [ok, degraded]}
+        service: {type: string}
+        version: {type: string}
+        timestamp: {type: string, format: date-time}
+        checks:
+          type: object
+          description: Per-dependency state, keyed by dependency name.
+          additionalProperties: {type: string, enum: [ok, degraded, error]}
+
+    Readiness:
+      type: object
+      required: [status, checks]
+      properties:
+        status: {type: string, enum: [ready, not_ready]}
+        checks:
+          type: object
+          additionalProperties: {type: string, enum: [ok, degraded, error]}
+
+    Me:
+      type: object
+      description: The authenticated user and the access their groups resolve to.
+      required: [id, subject, groups, roles, permissions, modules]
+      properties:
+        id: {type: string, description: Immutable `USR-*` Global ID., pattern: '^USR-[0-9]+$'}
+        subject: {type: string, description: The authentik subject claim.}
+        email: {type: string}
+        name: {type: string}
+        username: {type: string}
+        groups: {type: array, items: {type: string}}
+        roles: {type: array, items: {type: string}}
+        permissions:
+          type: array
+          description: Effective permissions. `*` denotes full administration.
+          items: {type: string}
+        modules: {type: array, items: {type: string}}
+
+    Module:
+      type: object
+      required: [id, name, description, status]
+      properties:
+        id: {type: string}
+        name: {type: string}
+        description: {type: string}
+        status: {type: string}
+
+    Client:
+      type: object
+      description: A client, normalized from the authoritative CRM.
+      required: [id, source, source_id, name]
+      properties:
+        id: {type: string, pattern: '^CL-[0-9]+$'}
+        source: {type: string, example: espocrm}
+        source_id: {type: string, description: The identifier in the source system.}
+        name: {type: string}
+        website: {type: string}
+        email: {type: string}
+        phone: {type: string}
+
+    Contact:
+      type: object
+      description: A contact, normalized from the authoritative CRM.
+      required: [id, source, source_id, name]
+      properties:
+        id: {type: string, pattern: '^CT-[0-9]+$'}
+        source: {type: string, example: espocrm}
+        source_id: {type: string}
+        name: {type: string}
+        client_id:
+          type: string
+          description: |
+            The owning client's Global ID. Absent when the upstream record has
+            no account, or when that account has no mapping yet.
+          pattern: '^CL-[0-9]+$'
+        email: {type: string}
+        phone: {type: string}
+
+    Project:
+      type: object
+      description: A project, normalized from the authoritative project system.
+      required: [id, source, source_id, name, identifier]
+      properties:
+        id: {type: string, pattern: '^PR-[0-9]+$'}
+        source: {type: string, example: redmine}
+        source_id: {type: string}
+        name: {type: string}
+        identifier: {type: string, description: The upstream slug.}
+        description: {type: string}
+
+    Issue:
+      type: object
+      description: An issue or task, normalized from the authoritative project system.
+      required: [id, source, source_id, subject]
+      properties:
+        id: {type: string, pattern: '^TSK-[0-9]+$'}
+        source: {type: string, example: redmine}
+        source_id: {type: string}
+        subject: {type: string}
+        project_id:
+          type: string
+          description: The owning project's Global ID, when it is mapped.
+          pattern: '^PR-[0-9]+$'
+        status: {type: string, description: The upstream status name.}
+
+    Document:
+      type: object
+      description: A document, normalized from the authoritative wiki.
+      required: [id, source, source_id, title]
+      properties:
+        id: {type: string, pattern: '^DOC-[0-9]+$'}
+        source: {type: string, example: outline}
+        source_id: {type: string}
+        title: {type: string}
+        url: {type: string, description: The path within the source system.}
+        collection_id: {type: string}
+        updated_at: {type: string}
+
+    GlobalIDRequest:
+      type: object
+      required: [entity_type, source, source_id]
+      properties:
+        entity_type:
+          type: string
+          description: The platform entity type, which selects the identifier prefix.
+          example: client
+        source: {type: string, description: The authoritative system., example: espocrm}
+        source_id: {type: string, description: The identifier within that system.}
+        tenant_id: {type: string, description: The owning tenant, when ownership is known.}
+        metadata:
+          type: object
+          description: Integration metadata. Must not carry confidential upstream content.
+          additionalProperties: true
+
+    GlobalEntity:
+      type: object
+      required: [global_id, entity_type, source, source_id, created_at]
+      properties:
+        global_id: {type: string, pattern: '^[A-Z]+-[0-9]+$'}
+        entity_type: {type: string}
+        source: {type: string}
+        source_id: {type: string}
+        tenant_id: {type: string}
+        metadata: {type: object, additionalProperties: true}
+        created_at: {type: string, format: date-time}
+
+    AuditEvent:
+      type: object
+      required: [id, occurred_at, action]
+      properties:
+        id: {type: integer, format: int64}
+        occurred_at: {type: string, format: date-time}
+        subject: {type: string, description: The authentik subject of the actor.}
+        global_user_id: {type: string, description: The actor's `USR-*` Global ID.}
+        action: {type: string, description: '`entity.action` naming, e.g. `global_id.created`.'}
+        resource_type: {type: string}
+        resource_id: {type: string}
+        request_id: {type: string, description: Correlates the event with the originating request.}
+        source_ip: {type: string}
+        metadata: {type: object, additionalProperties: true}
+
+    Role:
+      type: object
+      required: [id, name, kind, description, enabled, permissions, modules]
+      properties:
+        id: {type: string}
+        name: {type: string}
+        kind: {type: string, enum: [human, service]}
+        description: {type: string}
+        enabled: {type: boolean}
+        permissions: {type: array, items: {type: string}}
+        modules: {type: array, items: {type: string}}
+
+    ScopeGrant:
+      type: object
+      description: |
+        A permission granted to a principal within one scope. Evaluation denies
+        by default: a resource with no matching grant is refused.
+      required: [principal_type, principal_id, scope_type, scope_id, permission_id]
+      properties:
+        principal_type: {type: string, enum: [user, service, group]}
+        principal_id: {type: string}
+        scope_type: {type: string, enum: [global, tenant, client, project, resource]}
+        scope_id: {type: string, description: '`*` grants the permission across the whole scope type.'}
+        permission_id: {type: string}
+
+    ServicePrincipal:
+      type: object
+      required: [id, subject, groups, roles, permissions]
+      properties:
+        id: {type: string, description: Immutable `SVC-*` Global ID., pattern: '^SVC-[0-9]+$'}
+        subject: {type: string}
+        name: {type: string}
+        username: {type: string}
+        groups: {type: array, items: {type: string}}
+        roles: {type: array, items: {type: string}}
+        permissions: {type: array, items: {type: string}}
+
+    AdapterInfo:
+      type: object
+      required: [id, name, version, status, capabilities]
+      properties:
+        id: {type: string}
+        name: {type: string}
+        version: {type: string}
+        status: {type: string, enum: [ready, degraded, disabled]}
+        capabilities: {type: array, items: {type: string}}
+
+    AdapterHealth:
+      type: object
+      required: [status]
+      properties:
+        status: {type: string, enum: [ready, degraded, disabled]}
+        message:
+          type: string
+          description: |
+            A credential-safe explanation of a non-ready state. It never
+            carries an API key, an Authorization header or an upstream payload.
+
+    EventEnvelope:
+      type: object
+      description: |
+        The normalized platform event envelope. Only `event` and `source` are
+        required from a publisher; the platform fills the rest in during
+        normalization, so every published envelope carries `occurred_at`,
+        `severity`, `actor_id` and `request_id`.
+      required: [event, source]
+      properties:
+        event:
+          type: string
+          description: '`entity.action` naming, e.g. `backup.failed`.'
+          pattern: '^[a-z0-9_]+(\.[a-z0-9_]+)+$'
+        source: {type: string, description: The publishing system.}
+        actor_id: {type: string, description: Defaults to the publishing service identity.}
+        entity_id: {type: string, description: The subject Global ID, when the event has one.}
+        tenant_id: {type: string}
+        severity: {type: string, enum: [debug, info, warning, error, critical], default: info}
+        occurred_at: {type: string, format: date-time, description: Defaults to the time of publication. Always present on a published envelope.}
+        request_id: {type: string, description: Defaults to the request correlation id.}
+        data: {type: object, additionalProperties: true}

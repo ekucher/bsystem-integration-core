@@ -1,0 +1,8 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Security finding
+    url: https://github.com/ekucher/bsystem-deploy/blob/main/SECURITY.md
+    about: >-
+      Do not open a public issue for an exploitable finding. A public issue
+      publishes the vulnerability and the fact that it is unfixed at the same
+      time. Follow the private process instead.

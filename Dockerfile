@@ -1,9 +1,11 @@
 FROM golang:1.26-alpine AS build
 WORKDIR /src
-COPY go.mod ./
+# go.sum is copied so the build verifies dependency checksums instead of
+# regenerating them, which would accept a substituted module silently.
+COPY go.mod go.sum ./
+RUN go mod download && go mod verify
 COPY cmd ./cmd
 COPY internal ./internal
-RUN go mod tidy
 RUN CGO_ENABLED=0 GOOS=linux go build -trimpath -ldflags='-s -w' -o /out/bsystem-integration-core ./cmd/server
 
 FROM alpine:3.22

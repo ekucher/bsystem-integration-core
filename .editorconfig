@@ -1,0 +1,31 @@
+# Editor defaults for the BSYSTEM platform.
+#
+# The point is not tidiness: it is that a file's indentation should not depend
+# on which editor last touched it. A whitespace-only diff hides the change it
+# is mixed with, and reviewers stop reading diffs they cannot skim.
+root = true
+
+[*]
+charset = utf-8
+end_of_line = lf
+insert_final_newline = true
+trim_trailing_whitespace = true
+indent_style = space
+indent_size = 2
+
+# Go is formatted by gofmt, which uses tabs. An editor that helpfully converts
+# them produces a file gofmt immediately converts back, and CI fails on the
+# difference.
+[*.go]
+indent_style = tab
+
+[{Makefile,makefile,*.mk}]
+indent_style = tab
+
+[*.sql]
+indent_size = 4
+
+# Markdown treats trailing whitespace as a line break, so trimming it changes
+# rendered output.
+[*.md]
+trim_trailing_whitespace = false
