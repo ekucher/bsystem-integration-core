@@ -103,3 +103,80 @@ ON CONFLICT DO NOTHING`, id, fmt.Sprintf("USR-%06d", i%40)); err != nil {
 		t.Errorf("the reads-by-reader lookup does not use idx_notification_reads_reader.\nPlan:\n%s", readerPlan)
 	}
 }
+
+// MapGlobalIDs reads every mapping in one query and falls back to a per-record
+// path only for records the platform has never seen. A comment beside that
+// fallback says it "runs once per record in the platform's lifetime, not once
+// per request", which is the difference between a collection read costing one
+// query and costing one per row.
+//
+// This counts the scans PostgreSQL performs on global_entities, because that is
+// the only thing that distinguishes the two. An earlier version of this test
+// watched the Global ID counter instead, and a mutation proved it worthless:
+// disabling the batched read entirely left the counter untouched, because the
+// per-record path re-reads before it allocates and finds the row. The counter
+// detects re-allocation. It does not detect an N+1, which is what the comment
+// promises is absent.
+//
+// pg_stat_statements is not loaded here or in CI, so the table statistics are
+// what is available; pg_stat_force_next_flush makes them synchronous enough to
+// assert on, which they are not by default.
+func TestASecondReadOfTheSameRecordsIsOneQuery(t *testing.T) {
+	ctx, db := storeFixture(t)
+
+	requests := make([]GlobalIDRequest, 0, 25)
+	for i := 0; i < 25; i++ {
+		requests = append(requests, GlobalIDRequest{
+			EntityType: "client",
+			Source:     "espocrm",
+			SourceID:   fmt.Sprintf("n-plus-one-%02d", i),
+		})
+	}
+
+	scans := func() int64 {
+		t.Helper()
+		if _, err := db.pool.Exec(ctx, `SELECT pg_stat_force_next_flush()`); err != nil {
+			t.Fatalf("flush statistics: %v", err)
+		}
+		var seq, idx int64
+		if err := db.pool.QueryRow(ctx, `
+SELECT COALESCE(seq_scan,0), COALESCE(idx_scan,0)
+FROM pg_stat_user_tables WHERE relname='global_entities'`).Scan(&seq, &idx); err != nil {
+			t.Fatalf("read table statistics: %v", err)
+		}
+		return seq + idx
+	}
+
+	// First sighting: allocation is expected, and is the slow path by design.
+	first, err := db.MapGlobalIDs(ctx, "client", "espocrm", requests)
+	if err != nil {
+		t.Fatalf("first mapping: %v", err)
+	}
+	if len(first) != len(requests) {
+		t.Fatalf("first mapping returned %d of %d records", len(first), len(requests))
+	}
+
+	// Second sighting: every record is already mapped, so one batched read
+	// should answer the whole collection.
+	before := scans()
+	second, err := db.MapGlobalIDs(ctx, "client", "espocrm", requests)
+	if err != nil {
+		t.Fatalf("second mapping: %v", err)
+	}
+	used := scans() - before
+
+	// One scan for the batched read. A couple of spare is tolerance for the
+	// statistics view itself, not room for a per-record path: twenty-five
+	// records going one at a time would be twenty-five or more.
+	const tolerated = 3
+	if used > tolerated {
+		t.Errorf("reading %d already-mapped records took %d scans of global_entities; a batched read is one, and one scan per record is the N+1 this is here to catch",
+			len(requests), used)
+	}
+
+	for sourceID, globalID := range first {
+		if second[sourceID] != globalID {
+			t.Errorf("record %s mapped to %q and then to %q", sourceID, globalID, second[sourceID])
+		}
+	}
+}
