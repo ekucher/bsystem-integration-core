@@ -1,5 +1,12 @@
 bin/
 dist/
+
+# `go build ./cmd/x` with no -o writes ./x, in the repository root. That is
+# where a 13 MB mapping-audit binary was committed from, past rules that
+# covered only the directories a build can be told to use. One line per
+# command, kept in step by internal/repoguard.
+/mapping-audit
+/server
 .env
 *.log
 coverage.out
