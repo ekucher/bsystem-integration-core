@@ -136,9 +136,11 @@ type Server struct {
 	Source    string `json:"source"`
 	SourceID  string `json:"source_id"`
 	// LastEventAt is when the server was last reported on at all, which is
-	// what tells an operator that a reporter has gone quiet.
-	LastEventAt time.Time `json:"last_event_at"`
-	CreatedAt   time.Time `json:"created_at"`
+	// what tells an operator that a reporter has gone quiet. It is a pointer
+	// so that "never reported on" is absent rather than a zero date a caller
+	// would have to recognise.
+	LastEventAt *time.Time `json:"last_event_at,omitempty"`
+	CreatedAt   time.Time  `json:"created_at"`
 }
 
 // Report is one event about a server as it is stored and served.

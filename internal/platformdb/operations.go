@@ -16,19 +16,24 @@ var ErrServerNotFound = errors.New("server not found")
 
 const serverColumns = `
  global_id, name, environment, status, COALESCE(client_id,''), COALESCE(project_id,''),
- source, source_id, COALESCE(last_event_at, TIMESTAMPTZ '-infinity'), created_at`
+ source, source_id, last_event_at, created_at`
 
 func scanServer(row pgx.Row) (operations.Server, error) {
 	var server operations.Server
-	var lastEvent time.Time
+	// last_event_at is scanned as a nullable timestamp rather than coalesced
+	// to a sentinel. A server that has never been reported on has no last
+	// event, and representing that as a date — any date — makes callers
+	// compare against a magic value to find out.
+	var lastEvent *time.Time
 	err := row.Scan(&server.ID, &server.Name, &server.Environment, &server.Status,
 		&server.ClientID, &server.ProjectID, &server.Source, &server.SourceID,
 		&lastEvent, &server.CreatedAt)
 	if err != nil {
 		return operations.Server{}, err
 	}
-	if !lastEvent.IsZero() && lastEvent.Year() > 1 {
-		server.LastEventAt = lastEvent.UTC()
+	if lastEvent != nil {
+		utc := lastEvent.UTC()
+		server.LastEventAt = &utc
 	}
 	server.CreatedAt = server.CreatedAt.UTC()
 	return server, nil
