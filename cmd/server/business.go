@@ -127,16 +127,38 @@ func upstreamFailure(w http.ResponseWriter, adapter string, err error) {
 // adapterFor resolves a registered adapter and asserts the capability the
 // handler needs. An adapter that is absent or lacks the capability is a
 // configuration problem, not an upstream failure, so it is reported as such.
+//
+// Both answers carry a stable code and name the adapter. A deployment that
+// deliberately leaves an integration out is a supported configuration, not a
+// fault, and it is the condition a caller is most likely to meet on a stage
+// deployment. Without a code a caller can only match on the human-readable
+// summary, which the error contract says may change, so it ends up presenting
+// a deliberate configuration as an unexplained failure.
 func adapterFor[T any](w http.ResponseWriter, id, name string) (T, bool) {
 	var zero T
+	// An integration that is not configured is still registered: a disabled
+	// placeholder stands in for it so that /health and /adapters can report it
+	// as absent rather than silently omitting it. That placeholder implements
+	// no capability, so a status check has to come first — otherwise every
+	// unconfigured integration is reported as one that "does not support this
+	// capability", which reads as a permanent limit of the product instead of
+	// an environment variable nobody set.
 	adapter, registered := adapterRegistry.Get(id)
-	if !registered {
-		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": name + " adapter not configured"})
+	if !registered || adapter.Info().Status == adapters.StatusDisabled {
+		writeJSON(w, http.StatusServiceUnavailable, map[string]string{
+			"error":  name + " adapter not configured",
+			"code":   "adapter_not_configured",
+			"source": id,
+		})
 		return zero, false
 	}
 	reader, capable := adapter.(T)
 	if !capable {
-		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": name + " adapter does not support this capability"})
+		writeJSON(w, http.StatusServiceUnavailable, map[string]string{
+			"error":  name + " adapter does not support this capability",
+			"code":   "capability_unsupported",
+			"source": id,
+		})
 		return zero, false
 	}
 	return reader, true

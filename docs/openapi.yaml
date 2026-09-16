@@ -1816,11 +1816,29 @@ components:
           schema: {$ref: '#/components/schemas/Error'}
           example: {error: upstream service unavailable, code: upstream_unavailable, source: espocrm}
     DependencyUnavailable:
-      description: A platform dependency, such as the database, is unavailable.
+      description: |
+        A platform dependency is unavailable, or an integration this endpoint
+        needs is not configured.
+
+        On an adapter-backed endpoint this is the answer a deployment gets when
+        it deliberately leaves a source system out, which is a supported
+        configuration rather than a fault. Those answers carry
+        `adapter_not_configured` or `capability_unsupported` and name the
+        adapter in `source`, so a caller can say which integration is missing
+        instead of reporting an unexplained failure. A dependency of the
+        platform itself, such as the database, carries no code.
+
+        This is never rendered as an empty collection. An empty result would
+        tell a caller the platform knows of no records, when the truth is that
+        nobody has told it where to look.
       content:
         application/json:
           schema: {$ref: '#/components/schemas/Error'}
-          example: {error: RBAC store unavailable}
+          examples:
+            adapterNotConfigured:
+              value: {error: EspoCRM adapter not configured, code: adapter_not_configured, source: espocrm}
+            platformDependency:
+              value: {error: RBAC store unavailable}
 
   schemas:
     Collection:
@@ -2320,6 +2338,11 @@ components:
 
             `upstream_unavailable` — a source system failed, timed out or
             rate-limited the platform.
+            `adapter_not_configured` — the integration this endpoint reads
+            from is not configured in this deployment. `source` names it. This
+            is a deliberate configuration, not a fault.
+            `capability_unsupported` — the integration is configured but its
+            adapter does not implement this capability. `source` names it.
             `permission_required` — the caller does not hold the permission.
             `scope_required` — the caller holds it but may only exercise it
             inside a scope they have been granted, and no grant matches.
@@ -2352,6 +2375,8 @@ components:
             `ai_unavailable` — the model provider could not be reached.
           enum:
             - upstream_unavailable
+            - adapter_not_configured
+            - capability_unsupported
             - scope_required
             - permission_required
             - not_found
