@@ -23,6 +23,22 @@ func (db *DB) EnsureServiceIdentity(ctx context.Context, identity ServiceIdentit
 	}
 	defer tx.Rollback(ctx)
 
+	// Serialize first-seen allocation for the same subject, as EnsureIdentity
+	// does for human identities. SELECT ... FOR UPDATE below locks a row, and
+	// on a first sighting there is no row to lock: every concurrent
+	// transaction sees no rows, every one of them bumps the counter, and each
+	// caller is handed a different Global ID for the same service. The upsert
+	// that follows then lets the last writer win, so the earlier callers walk
+	// away holding identifiers the platform does not recognise — and each was
+	// told it had created the identity.
+	//
+	// Service identities make this the normal case rather than the unlucky
+	// one: an integration that starts several replicas registers from all of
+	// them at once.
+	if _, err := tx.Exec(ctx, `SELECT pg_advisory_xact_lock(hashtext($1))`, identity.Subject); err != nil {
+		return "", false, err
+	}
+
 	var globalID string
 	err = tx.QueryRow(ctx, `SELECT global_service_id FROM service_identities WHERE subject=$1 FOR UPDATE`, identity.Subject).Scan(&globalID)
 	created := false

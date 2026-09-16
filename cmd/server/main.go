@@ -519,18 +519,36 @@ func main() {
 		serverErrors <- server.ListenAndServe()
 	}()
 
+	if err := serveUntilSignal(server, serverErrors, shutdown,
+		durationEnv("HTTP_SHUTDOWN_GRACE", 10*time.Second)); err != nil {
+		log.Fatalf("server failed: %v", err)
+	}
+}
+
+// serveUntilSignal waits for the server to fail or for a shutdown signal, and
+// on a signal drains the requests already in flight within grace.
+//
+// It is a function rather than the tail of main so that the draining can be
+// tested. The property it exists for — a request that arrived before SIGTERM
+// finishes rather than being dropped — is invisible on a healthy platform and
+// appears only during a rolling deploy, as a burst of failures for users who
+// did nothing but arrive at the wrong moment. That reads as an intermittent
+// platform fault rather than as a deployment, which is what makes it expensive
+// to diagnose and worth pinning.
+func serveUntilSignal(server *http.Server, serverErrors <-chan error, signals <-chan os.Signal, grace time.Duration) error {
 	select {
 	case err := <-serverErrors:
 		if err != nil && !errors.Is(err, http.ErrServerClosed) {
-			log.Fatalf("server failed: %v", err)
+			return err
 		}
-	case sig := <-shutdown:
+		return nil
+	case sig := <-signals:
 		logger.Info("shutting down", "signal", sig.String())
 		// The grace period must be shorter than the runtime's own kill
 		// delay, or the runtime wins the race and the graceful path never
 		// completes. Ten seconds is comfortably inside Docker's default
 		// thirty and Kubernetes' default thirty.
-		ctx, cancel := context.WithTimeout(context.Background(), durationEnv("HTTP_SHUTDOWN_GRACE", 10*time.Second))
+		ctx, cancel := context.WithTimeout(context.Background(), grace)
 		defer cancel()
 		if err := server.Shutdown(ctx); err != nil {
 			// A request that outlived the grace period is closed. Saying so
@@ -540,5 +558,6 @@ func main() {
 			_ = server.Close()
 		}
 		logger.Info("stopped")
+		return nil
 	}
 }

@@ -4,6 +4,7 @@ import (
 	"context"
 	"net/url"
 	"os"
+	"sort"
 	"strings"
 	"sync"
 	"testing"
@@ -305,5 +306,89 @@ func TestSeveralInstancesCanStartAtOnce(t *testing.T) {
 	}
 	if len(state.Drifted) != 0 {
 		t.Errorf("a concurrently migrated database reports drift: %v", state.Drifted)
+	}
+}
+
+// Every deployment that already exists is at some schema level, and an upgrade
+// has to work from each of them — not only from an empty database, which is
+// the one case a fresh CI run exercises and the one case no real deployment is
+// ever in.
+//
+// The migrations are applied unconditionally in name order on every start, so
+// "upgrade from level N" is: apply 001..N, then apply the whole set. That is
+// what a running deployment does when a new release adds a file. A migration
+// that is not idempotent, or that assumes an object a later file creates,
+// fails here and nowhere else.
+//
+// The levels are derived from the directory rather than listed, so a migration
+// added later is covered without anybody remembering to extend this.
+func TestUpgradeWorksFromEveryHistoricalSchemaLevel(t *testing.T) {
+	adminDSN := os.Getenv("TEST_DATABASE_URL")
+	if adminDSN == "" {
+		t.Skip("TEST_DATABASE_URL is not configured")
+	}
+
+	entries, err := migrationsFS.ReadDir("migrations")
+	if err != nil {
+		t.Fatalf("read migrations: %v", err)
+	}
+	var names []string
+	for _, entry := range entries {
+		if !entry.IsDir() {
+			names = append(names, entry.Name())
+		}
+	}
+	sort.Strings(names)
+	if len(names) < 2 {
+		t.Fatalf("found %d migration(s); an upgrade path needs at least two to mean anything", len(names))
+	}
+
+	for level := 1; level < len(names); level++ {
+		t.Run(strings.TrimSuffix(names[level-1], ".sql"), func(t *testing.T) {
+			ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
+			defer cancel()
+			dsn := migrationDatabase(ctx, t, adminDSN)
+
+			// Bring the database to the historical level by hand, applying
+			// exactly the files a deployment of that vintage would have.
+			pool, err := pgxpool.New(ctx, dsn)
+			if err != nil {
+				t.Fatalf("connect to the fixture database: %v", err)
+			}
+			for _, name := range names[:level] {
+				body, err := migrationsFS.ReadFile("migrations/" + name)
+				if err != nil {
+					pool.Close()
+					t.Fatalf("read %s: %v", name, err)
+				}
+				if _, err := pool.Exec(ctx, string(body)); err != nil {
+					pool.Close()
+					t.Fatalf("apply %s while building the historical level: %v", name, err)
+				}
+			}
+			pool.Close()
+
+			// Now upgrade, exactly as a new release does.
+			db, err := Open(ctx, dsn)
+			if err != nil {
+				t.Fatalf("upgrade from a database at %s: %v", names[level-1], err)
+			}
+			defer db.Close()
+
+			if err := db.Ping(ctx); err != nil {
+				t.Fatalf("ping after upgrading from %s: %v", names[level-1], err)
+			}
+
+			// The schema history must account for every file, so an upgrade
+			// that silently skipped one is visible rather than merely working.
+			var recorded int
+			if err := db.pool.QueryRow(ctx, `SELECT count(*) FROM schema_migrations`).Scan(&recorded); err != nil {
+				t.Fatalf("read schema history: %v", err)
+			}
+			if recorded != len(names) {
+				t.Errorf("schema history records %d migration(s) after upgrading from %s, want %d",
+					recorded, names[level-1], len(names))
+			}
+		})
 	}
 }
