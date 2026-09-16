@@ -30,7 +30,7 @@ jobs:
       TEST_DATABASE_URL: postgres://bsystem:bsystem_ci_password@127.0.0.1:5432/bsystem_integration?sslmode=disable
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
       - name: Setup Go
         uses: actions/setup-go@v5
@@ -71,7 +71,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
       - name: Setup Node.js
         uses: actions/setup-node@v4
@@ -87,7 +87,7 @@ jobs:
     timeout-minutes: 25
     steps:
       - name: Checkout Integration Core
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
         with:
           path: bsystem-integration-core
 
@@ -108,7 +108,7 @@ jobs:
           echo "ref=$ref" >> "$GITHUB_OUTPUT"
 
       - name: Checkout the deployment repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
         with:
           repository: ekucher/bsystem-deploy
           ref: ${{ steps.deploy-ref.outputs.ref }}
