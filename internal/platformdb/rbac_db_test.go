@@ -2,6 +2,8 @@ package platformdb
 
 import (
 	"context"
+	"errors"
+	"strings"
 	"testing"
 )
 
@@ -359,5 +361,68 @@ func TestListRolesCarriesEachRolesOwnPermissionsAndModules(t *testing.T) {
 	}
 	if !has(administrator.Permissions, "*") {
 		t.Fatalf("the administrator holds the wildcard permission: %+v", administrator.Permissions)
+	}
+}
+
+// A scope grant the caller got wrong names the field, not the constraint.
+//
+// principal_scopes carries two CHECKs and a foreign key, and AddScopeGrant
+// returned the driver's refusal unchanged. The handler answered it as HTTP 400
+// with the message in the body, so the endpoint that decides who may see what
+// was handing out the table name and the constraint name to whoever asked:
+//
+//	ERROR: new row for relation "principal_scopes" violates check constraint
+//	"principal_scopes_principal_type_check" (SQLSTATE 23514)
+//
+// The vocabularies are worth naming precisely because this schema holds two
+// that are easy to confuse: a role's kind is "human" or "service", while a
+// scope grant's principal is "user", "service" or "group". An administrator
+// reaching for the wrong one is the likeliest way to arrive here.
+func TestAScopeGrantTheCallerGotWrongNamesTheField(t *testing.T) {
+	ctx, db := storeFixture(t)
+
+	for _, probe := range []struct {
+		name     string
+		grant    ScopeGrant
+		sentinel error
+	}{
+		{
+			name:     "a role kind where a principal kind belongs",
+			grant:    ScopeGrant{PrincipalType: "human", PrincipalID: "USR-000001", ScopeType: "client", ScopeID: "CL-000001", PermissionID: "crm.client.read"},
+			sentinel: ErrInvalidPrincipalType,
+		},
+		{
+			name:     "a scope outside the vocabulary",
+			grant:    ScopeGrant{PrincipalType: "user", PrincipalID: "USR-000001", ScopeType: "galaxy", ScopeID: "CL-000001", PermissionID: "crm.client.read"},
+			sentinel: ErrInvalidScopeType,
+		},
+		{
+			name:     "a permission the catalogue does not hold",
+			grant:    ScopeGrant{PrincipalType: "user", PrincipalID: "USR-000001", ScopeType: "client", ScopeID: "CL-000001", PermissionID: "no.such.permission"},
+			sentinel: ErrUnknownPermission,
+		},
+	} {
+		t.Run(probe.name, func(t *testing.T) {
+			err := db.AddScopeGrant(ctx, probe.grant)
+			if !errors.Is(err, probe.sentinel) {
+				t.Fatalf("error = %v, want one matching %v", err, probe.sentinel)
+			}
+			for _, leak := range []string{"SQLSTATE", "constraint", "principal_scopes", "relation"} {
+				if strings.Contains(err.Error(), leak) {
+					t.Errorf("the caller-facing error carries %q: %v", leak, err)
+				}
+			}
+		})
+	}
+
+	// A grant that is right still works, and twice is not an error: the same
+	// grant applied again is the same state, which is what an administrator
+	// retrying a request means by it.
+	good := ScopeGrant{PrincipalType: "user", PrincipalID: "USR-000001", ScopeType: "client", ScopeID: "CL-000001", PermissionID: "crm.client.read"}
+	if err := db.AddScopeGrant(ctx, good); err != nil {
+		t.Fatalf("a valid grant was refused: %v", err)
+	}
+	if err := db.AddScopeGrant(ctx, good); err != nil {
+		t.Errorf("granting the same scope twice must be the same state, got %v", err)
 	}
 }

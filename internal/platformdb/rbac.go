@@ -2,6 +2,8 @@ package platformdb
 
 import (
 	"context"
+	"errors"
+	"fmt"
 	"sort"
 )
 
@@ -192,11 +194,50 @@ ORDER BY kind,name`)
 	return roles, nil
 }
 
+// The three ways a scope grant can be the caller's mistake. They are sentinels
+// rather than messages, so the HTTP layer can tell them from a database
+// failure without matching on text — which is how a raw SQL error comes to be
+// answered as a client error.
+var (
+	// ErrInvalidPrincipalType names a principal kind outside the vocabulary.
+	//
+	// The vocabulary is small and closed and worth stating precisely, because
+	// two different ones live in this schema and are easy to confuse: a role's
+	// kind is "human" or "service", while a scope grant's principal is "user",
+	// "service" or "group".
+	ErrInvalidPrincipalType = errors.New("principal_type must be user, service or group")
+	// ErrInvalidScopeType names a scope outside the vocabulary.
+	ErrInvalidScopeType = errors.New("scope_type must be global, tenant, client, project or resource")
+	// ErrUnknownPermission names a permission the catalogue does not hold.
+	ErrUnknownPermission = errors.New("unknown permission")
+)
+
+// These mirror the CHECK constraints on principal_scopes. Checking here as
+// well is not redundancy for its own sake: the constraint is what guarantees
+// the data, and this is what lets the platform say which field was wrong
+// instead of handing back the constraint's name.
+var (
+	principalTypes = map[string]bool{"user": true, "service": true, "group": true}
+	scopeTypes     = map[string]bool{"global": true, "tenant": true, "client": true, "project": true, "resource": true}
+)
+
 func (db *DB) AddScopeGrant(ctx context.Context, grant ScopeGrant) error {
+	if !principalTypes[grant.PrincipalType] {
+		return fmt.Errorf("%w: %q", ErrInvalidPrincipalType, grant.PrincipalType)
+	}
+	if !scopeTypes[grant.ScopeType] {
+		return fmt.Errorf("%w: %q", ErrInvalidScopeType, grant.ScopeType)
+	}
 	_, err := db.pool.Exec(ctx, `
 INSERT INTO principal_scopes (principal_type,principal_id,scope_type,scope_id,permission_id)
 VALUES ($1,$2,$3,$4,$5)
 ON CONFLICT DO NOTHING`, grant.PrincipalType, grant.PrincipalID, grant.ScopeType, grant.ScopeID, grant.PermissionID)
+	// The permission is a foreign key rather than a vocabulary, so it is
+	// caught rather than pre-checked: a separate existence query would be a
+	// second round trip and would still be racing the catalogue.
+	if isForeignKeyViolation(err) {
+		return fmt.Errorf("%w: %q", ErrUnknownPermission, grant.PermissionID)
+	}
 	return err
 }
 

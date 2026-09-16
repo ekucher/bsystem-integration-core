@@ -2,6 +2,7 @@ package main
 
 import (
 	"encoding/json"
+	"errors"
 	"net/http"
 	"strings"
 
@@ -57,7 +58,30 @@ func (a *app) adminAddScope(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err := a.db.AddScopeGrant(r.Context(), grant); err != nil {
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+		// Three failures here are the caller's and name the field they got
+		// wrong. Everything else is the platform's, and err.Error() on a
+		// database failure is a raw SQL message naming the table and the
+		// constraint — schema topology, handed out by the endpoint that
+		// decides who may see what.
+		//
+		// It also answered 400 for all of them, which told an administrator
+		// their valid request was malformed whenever the database was the
+		// thing that was unwell.
+		switch {
+		case errors.Is(err, platformdb.ErrInvalidPrincipalType):
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error(), "code": "invalid_principal_type"})
+		case errors.Is(err, platformdb.ErrInvalidScopeType):
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error(), "code": "invalid_scope_type"})
+		case errors.Is(err, platformdb.ErrUnknownPermission):
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error(), "code": "unknown_permission"})
+		default:
+			logger.ErrorContext(r.Context(), "scope grant failed", "scope_type", grant.ScopeType, "error", err.Error())
+			writeJSON(w, http.StatusServiceUnavailable, map[string]string{
+				"error":      "scope store unavailable",
+				"code":       "scope_store_unavailable",
+				"request_id": requestIDFrom(r.Context()),
+			})
+		}
 		return
 	}
 	a.audit(r, access, "rbac.scope.granted", grant.ScopeType, grant.ScopeID, map[string]any{"principal_type": grant.PrincipalType, "principal_id": grant.PrincipalID, "permission": grant.PermissionID})
