@@ -102,7 +102,11 @@ PostgreSQL stores:
 - integration metadata;
 - audit metadata where applicable.
 
-Redis may be used for caching, distributed locks, short-lived state and rate limiting.
+Redis may be used for caching, distributed locks, short-lived state and rate
+limiting. Nothing uses it today, and `bsystem-deploy` no longer provisions one:
+the stack carried a Redis container that no service ever talked to, which is
+worse than none, because a running container reads as a dependency in use. The
+first feature that needs Redis adds the service back along with the use.
 
 ## Reliability rules
 
