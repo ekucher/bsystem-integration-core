@@ -332,3 +332,75 @@ func TestServerDeletionCascadesToItsEvents(t *testing.T) {
 		t.Fatalf("events must not outlive their server, found %d", orphans)
 	}
 }
+
+// The rollback that matters is the one after a write has already succeeded.
+//
+// TestAnEventForAnUnknownServerStoresNothing covers the first write failing,
+// where there was nothing to undo: the foreign key refuses the insert and the
+// transaction had written nothing. This is the other half — the event is
+// stored, and then the status update fails.
+//
+// InsertOperationsEvent says in its own comment that the two belong together:
+// "a stored event whose status was not applied leaves a dashboard disagreeing
+// with its own history, and an applied status with no event behind it cannot
+// be explained to whoever asks why". That is the property, and only a partial
+// failure can break it.
+//
+// The status column carries a CHECK, so a value outside its vocabulary fails
+// the UPDATE deterministically without needing the database to be broken. A
+// caller cannot reach this — the handler normalises the status first — which
+// is the point: the transaction boundary has to hold for reasons the caller
+// never has to know about.
+//
+// What this proves, precisely: the two writes share one transaction. It does
+// not prove the error handling around them, and cannot — PostgreSQL aborts a
+// transaction at the first failed statement, so the event is discarded whether
+// or not the code checks that error. Dropping the check leaves this test
+// green. Moving the update to the pool, so the insert commits on its own, is
+// what fails it:
+//
+//	the event outlived the transaction that failed: 1 row(s)
+//
+// That is the regression worth guarding here — somebody splitting the two
+// writes apart — rather than a missing `if err != nil` the database already
+// covers.
+func TestAFailedStatusUpdateUndoesTheStoredEvent(t *testing.T) {
+	ctx, db := storeFixture(t)
+	upsert(t, ctx, db, newServer("SRV-000009", "web-09"))
+
+	before, err := db.GetServer(ctx, "SRV-000009")
+	if err != nil {
+		t.Fatalf("get server: %v", err)
+	}
+
+	_, err = db.InsertOperationsEvent(ctx, operations.Report{
+		ServerID: "SRV-000009", Event: "server.offline", Severity: "critical",
+		Source: "agent", OccurredAt: time.Now().UTC(),
+	}, "not-a-status")
+	if err == nil {
+		t.Fatal("a status outside the column's vocabulary must be refused")
+	}
+
+	// The event was inserted before the update failed. It must not survive.
+	var events int
+	if err := db.pool.QueryRow(ctx,
+		`SELECT count(*) FROM operations_events WHERE server_id=$1`, "SRV-000009").Scan(&events); err != nil {
+		t.Fatalf("count events: %v", err)
+	}
+	if events != 0 {
+		t.Errorf("the event outlived the transaction that failed: %d row(s)", events)
+	}
+
+	// And the server is untouched — not left with a moved last_event_at from
+	// a report that never landed.
+	after, err := db.GetServer(ctx, "SRV-000009")
+	if err != nil {
+		t.Fatalf("get server after the failure: %v", err)
+	}
+	if after.Status != before.Status {
+		t.Errorf("status = %q, was %q; a failed report must change nothing", after.Status, before.Status)
+	}
+	if (after.LastEventAt == nil) != (before.LastEventAt == nil) {
+		t.Errorf("last_event_at moved on a report that failed")
+	}
+}
