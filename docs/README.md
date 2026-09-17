@@ -13,6 +13,7 @@
 
 | Document | What it answers |
 | --- | --- |
+| [AUTHENTICATION.md](AUTHENTICATION.md) | how a bearer token is proved genuine: local signature validation, key rotation, and what is refused |
 | [AUTHORIZATION.md](AUTHORIZATION.md) | roles, permissions, scopes, and how a decision is made |
 | [AUDIT.md](AUDIT.md) | which operations may succeed without a durable audit record, and what happens when one cannot be written |
 | [GLOBAL-IDS.md](GLOBAL-IDS.md) | how records are identified across systems |

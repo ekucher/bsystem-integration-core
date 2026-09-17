@@ -137,10 +137,11 @@ func (a *app) authenticateService(next http.Handler) http.Handler {
 			writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "missing bearer token"})
 			return
 		}
-		info, err := fetchUserInfo(r.Context(), strings.TrimPrefix(header, "Bearer "))
+		info, err := a.identify(r.Context(), strings.TrimPrefix(header, "Bearer "))
 		if err != nil {
+			status, message := authenticationStatus(err)
 			logger.WarnContext(r.Context(), "service authentication failed", "error", err.Error())
-			writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "invalid or expired token"})
+			writeJSON(w, status, map[string]string{"error": message})
 			return
 		}
 		if !hasString(info.Groups, serviceGroup) {
