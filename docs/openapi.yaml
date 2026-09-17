@@ -2566,8 +2566,9 @@ components:
             required BSYSTEM groups are incomplete.
             `invalid_user_input`, `invalid_role`, `username_conflict`,
             `last_admin_guard`, `service_identity`, `role_conflict`,
-            `password_unsupported` — human-account validation and lifecycle
-            failures returned by the administration surface.
+            `password_unsupported`, `user_admin_rejected` — human-account
+            validation and lifecycle failures returned by the administration
+            surface.
             `rate_limited` — the authenticated principal has spent its
             allowance for this class of surface. The response carries
             `Retry-After` in seconds.
@@ -2599,6 +2600,7 @@ components:
             - service_identity
             - role_conflict
             - password_unsupported
+            - user_admin_rejected
             - audit_unavailable
             - rate_limited
             - adapter_not_configured
