@@ -125,6 +125,13 @@ func (a *app) adminCreateAccount(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "unknown human role", "code": "invalid_role"})
 		return
 	}
+	if input.Role == "admin" && !callerIsAdministrator(r) {
+		writeJSON(w, http.StatusForbidden, map[string]string{
+			"error": "administrator access required for administrator-class user management",
+			"code":  "permission_required",
+		})
+		return
+	}
 	if input.Username == "" || !humanUsername.MatchString(input.Username) || input.Name == "" || input.Password == "" {
 		writeJSON(w, http.StatusBadRequest, map[string]string{
 			"error": "username, name and password are required and username contains invalid characters",
@@ -191,6 +198,7 @@ var (
 	errServiceIdentity     = errors.New("service identity cannot be managed as a human")
 	errNotHumanAccount     = errors.New("account has no BSYSTEM human role")
 	errPasswordUnsupported = errors.New("password reset is only supported for internal users")
+	errAdminTarget          = errors.New("administrator-class user management requires administrator access")
 )
 
 func (a *app) adminUpdateAccount(w http.ResponseWriter, r *http.Request) {
@@ -235,6 +243,9 @@ func (a *app) adminUpdateAccount(w http.ResponseWriter, r *http.Request) {
 		currentRoles := rolesFromGroups(groupNames(before.GroupsObj))
 		if len(currentRoles) == 0 {
 			return errNotHumanAccount
+		}
+		if (containsString(currentRoles, "admin") || requestedRole == "admin") && !callerIsAdministrator(r) {
+			return errAdminTarget
 		}
 
 		groups, err := a.userAdmin.ListGroups(ctx)
@@ -331,8 +342,12 @@ func (a *app) adminSetAccountPassword(w http.ResponseWriter, r *http.Request) {
 		if hasGroup(user.GroupsObj, "BSYSTEM-Services") || user.Type == "service_account" || user.Type == "internal_service_account" {
 			return errServiceIdentity
 		}
-		if len(rolesFromGroups(groupNames(user.GroupsObj))) == 0 {
+		targetRoles := rolesFromGroups(groupNames(user.GroupsObj))
+		if len(targetRoles) == 0 {
 			return errNotHumanAccount
+		}
+		if containsString(targetRoles, "admin") && !callerIsAdministrator(r) {
+			return errAdminTarget
 		}
 		if user.Type != "internal" {
 			return errPasswordUnsupported
@@ -396,6 +411,11 @@ func (a *app) writeUserAdminMutationError(w http.ResponseWriter, r *http.Request
 		writeJSON(w, http.StatusConflict, map[string]string{"error": "account has no BSYSTEM human role", "code": "role_conflict"})
 	case errors.Is(err, errPasswordUnsupported):
 		writeJSON(w, http.StatusConflict, map[string]string{"error": "password reset is only supported for internal users", "code": "password_unsupported"})
+	case errors.Is(err, errAdminTarget):
+		writeJSON(w, http.StatusForbidden, map[string]string{
+			"error": "administrator access required for administrator-class user management",
+			"code":  "permission_required",
+		})
 	case errors.Is(err, errHumanGroupMissing):
 		logger.ErrorContext(r.Context(), "required BSYSTEM human group is missing", "error", err.Error())
 		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "user administration configuration is incomplete", "code": "user_admin_unavailable", "request_id": requestIDFrom(r.Context())})
@@ -421,7 +441,22 @@ func parseAuthentikID(w http.ResponseWriter, r *http.Request) (int, bool) {
 func decodeAdminJSON(w http.ResponseWriter, r *http.Request, out any) error {
 	decoder := json.NewDecoder(http.MaxBytesReader(w, r.Body, 64<<10))
 	decoder.DisallowUnknownFields()
-	return decoder.Decode(out)
+	if err := decoder.Decode(out); err != nil {
+		return err
+	}
+	var trailing any
+	if err := decoder.Decode(&trailing); !errors.Is(err, io.EOF) {
+		if err == nil {
+			return errors.New("multiple JSON values")
+		}
+		return err
+	}
+	return nil
+}
+
+func callerIsAdministrator(r *http.Request) bool {
+	access := accessFrom(r.Context())
+	return containsString(access.Roles, "Administrator") || containsString(access.Permissions, "*") || containsString(access.Permissions, "identity.user.admin")
 }
 
 func mergeAdminAccounts(users []authentikadmin.User, identities []platformdb.IdentityView) []adminAccount {
@@ -434,7 +469,12 @@ func mergeAdminAccounts(users []authentikadmin.User, identities []platformdb.Ide
 	seen := map[string]bool{}
 	for _, user := range users {
 		names := groupNames(user.GroupsObj)
-		if len(rolesFromGroups(names)) == 0 && !hasString(names, "BSYSTEM-Services") {
+		if hasString(names, "BSYSTEM-Services") ||
+			user.Type == "service_account" ||
+			user.Type == "internal_service_account" {
+			continue
+		}
+		if len(rolesFromGroups(names)) == 0 {
 			continue
 		}
 		identity := byUsername[user.Username]
