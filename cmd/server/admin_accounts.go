@@ -245,7 +245,7 @@ func (a *app) adminUpdateAccount(w http.ResponseWriter, r *http.Request) {
 		if len(currentRoles) == 0 {
 			return errNotHumanAccount
 		}
-		if (containsString(currentRoles, "admin") || requestedRole == "admin") && !callerIsAdministrator(r) {
+		if (hasString(currentRoles, "admin") || requestedRole == "admin") && !callerIsAdministrator(r) {
 			return errAdminTarget
 		}
 
@@ -289,7 +289,7 @@ func (a *app) adminUpdateAccount(w http.ResponseWriter, r *http.Request) {
 			resultRole = currentRoles[0]
 		}
 
-		if before.IsActive && containsString(currentRoles, "admin") && (!resultActive || resultRole != "admin") {
+		if before.IsActive && hasString(currentRoles, "admin") && (!resultActive || resultRole != "admin") {
 			users, err := a.userAdmin.ListUsers(ctx)
 			if err != nil {
 				return err
@@ -347,7 +347,7 @@ func (a *app) adminSetAccountPassword(w http.ResponseWriter, r *http.Request) {
 		if len(targetRoles) == 0 {
 			return errNotHumanAccount
 		}
-		if containsString(targetRoles, "admin") && !callerIsAdministrator(r) {
+		if hasString(targetRoles, "admin") && !callerIsAdministrator(r) {
 			return errAdminTarget
 		}
 		if user.Type != "internal" {
@@ -457,7 +457,7 @@ func decodeAdminJSON(w http.ResponseWriter, r *http.Request, out any) error {
 
 func callerIsAdministrator(r *http.Request) bool {
 	access := accessFrom(r.Context())
-	return containsString(access.Roles, "Administrator") || containsString(access.Permissions, "*") || containsString(access.Permissions, "identity.user.admin")
+	return hasString(access.Roles, "Administrator") || hasString(access.Permissions, "*") || hasString(access.Permissions, "identity.user.admin")
 }
 
 func mergeAdminAccounts(users []authentikadmin.User, identities []platformdb.IdentityView) []adminAccount {
@@ -618,15 +618,3 @@ func uniqueStrings(values []string) []string {
 	return result
 }
 
-func containsString(values []string, wanted string) bool {
-	for _, value := range values {
-		if value == wanted {
-			return true
-		}
-	}
-	return false
-}
-
-func hasString(values []string, wanted string) bool {
-	return containsString(values, wanted)
-}
