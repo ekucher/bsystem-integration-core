@@ -124,4 +124,3 @@ ORDER BY username, global_user_id
 	}
 	return result, nil
 }
-
