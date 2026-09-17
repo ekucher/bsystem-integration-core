@@ -57,7 +57,9 @@ func (a *app) adminAddScope(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	if err := a.db.AddScopeGrant(r.Context(), grant); err != nil {
+	record := a.auditRecord(r, access, "rbac.scope.granted", grant.ScopeType, grant.ScopeID,
+		map[string]any{"principal_type": grant.PrincipalType, "principal_id": grant.PrincipalID, "permission": grant.PermissionID})
+	if err := a.db.AddScopeGrant(r.Context(), grant, record); err != nil {
 		// Three failures here are the caller's and name the field they got
 		// wrong. Everything else is the platform's, and err.Error() on a
 		// database failure is a raw SQL message naming the table and the
@@ -74,6 +76,19 @@ func (a *app) adminAddScope(w http.ResponseWriter, r *http.Request) {
 			writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error(), "code": "invalid_scope_type"})
 		case errors.Is(err, platformdb.ErrUnknownPermission):
 			writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error(), "code": "unknown_permission"})
+		case errors.Is(err, platformdb.ErrAuditNotDurable):
+			// Fail-closed, and said plainly. The grant did not happen, and
+			// the administrator needs to know that rather than retrying a
+			// change they believe already took effect. The underlying
+			// database error stays in the log: it names tables and
+			// constraints, and this endpoint decides who may see what.
+			auditWrites.Inc("rbac.scope.granted", "refused")
+			logger.ErrorContext(r.Context(), "scope grant refused: its audit record could not be written", "scope_type", grant.ScopeType, "error", err.Error())
+			writeJSON(w, http.StatusServiceUnavailable, map[string]string{
+				"error":      "the grant was refused because its audit record could not be written",
+				"code":       "audit_unavailable",
+				"request_id": requestIDFrom(r.Context()),
+			})
 		default:
 			logger.ErrorContext(r.Context(), "scope grant failed", "scope_type", grant.ScopeType, "error", err.Error())
 			writeJSON(w, http.StatusServiceUnavailable, map[string]string{
@@ -84,7 +99,10 @@ func (a *app) adminAddScope(w http.ResponseWriter, r *http.Request) {
 		}
 		return
 	}
-	a.audit(r, access, "rbac.scope.granted", grant.ScopeType, grant.ScopeID, map[string]any{"principal_type": grant.PrincipalType, "principal_id": grant.PrincipalID, "permission": grant.PermissionID})
+	// No a.audit call here: the record was written inside the grant's own
+	// transaction, which is what makes it impossible for one to exist without
+	// the other.
+	auditWrites.Inc("rbac.scope.granted", "written")
 	writeJSON(w, http.StatusCreated, grant)
 }
 
@@ -94,10 +112,23 @@ func (a *app) adminDeleteScope(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	if err := a.db.DeleteScopeGrant(r.Context(), grant); err != nil {
-		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "scope store unavailable"})
+	record := a.auditRecord(r, access, "rbac.scope.revoked", grant.ScopeType, grant.ScopeID,
+		map[string]any{"principal_type": grant.PrincipalType, "principal_id": grant.PrincipalID, "permission": grant.PermissionID})
+	if err := a.db.DeleteScopeGrant(r.Context(), grant, record); err != nil {
+		if errors.Is(err, platformdb.ErrAuditNotDurable) {
+			auditWrites.Inc("rbac.scope.revoked", "refused")
+			logger.ErrorContext(r.Context(), "scope revocation refused: its audit record could not be written", "scope_type", grant.ScopeType, "error", err.Error())
+			writeJSON(w, http.StatusServiceUnavailable, map[string]string{
+				"error":      "the revocation was refused because its audit record could not be written",
+				"code":       "audit_unavailable",
+				"request_id": requestIDFrom(r.Context()),
+			})
+			return
+		}
+		logger.ErrorContext(r.Context(), "scope revocation failed", "scope_type", grant.ScopeType, "error", err.Error())
+		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "scope store unavailable", "code": "scope_store_unavailable"})
 		return
 	}
-	a.audit(r, access, "rbac.scope.revoked", grant.ScopeType, grant.ScopeID, map[string]any{"principal_type": grant.PrincipalType, "principal_id": grant.PrincipalID, "permission": grant.PermissionID})
+	auditWrites.Inc("rbac.scope.revoked", "written")
 	writeJSON(w, http.StatusOK, grant)
 }

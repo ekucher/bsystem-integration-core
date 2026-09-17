@@ -14,6 +14,7 @@
 | Document | What it answers |
 | --- | --- |
 | [AUTHORIZATION.md](AUTHORIZATION.md) | roles, permissions, scopes, and how a decision is made |
+| [AUDIT.md](AUDIT.md) | which operations may succeed without a durable audit record, and what happens when one cannot be written |
 | [GLOBAL-IDS.md](GLOBAL-IDS.md) | how records are identified across systems |
 | [EVENTS.md](EVENTS.md) | what the platform publishes and what a consumer may assume |
 | [ADAPTERS.md](ADAPTERS.md) | how upstream systems are reached |

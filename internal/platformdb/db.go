@@ -462,9 +462,18 @@ func (db *DB) ResolveGlobalEntity(ctx context.Context, globalID string) (GlobalE
 }
 
 func (db *DB) InsertAudit(ctx context.Context, event AuditEvent) error {
-	metaJSON, _ := json.Marshal(event.Metadata)
-	_, err := db.pool.Exec(ctx, `INSERT INTO audit_events (subject,global_user_id,action,resource_type,resource_id,request_id,source_ip,metadata) VALUES ($1,$2,$3,$4,$5,$6,$7,$8::jsonb)`, event.Subject, event.GlobalUserID, event.Action, event.ResourceType, event.ResourceID, event.RequestID, event.SourceIP, string(metaJSON))
+	_, err := db.pool.Exec(ctx, auditInsert, auditArgs(event)...)
 	return err
+}
+
+// auditInsert is the one statement that writes an audit record, so the
+// fail-open path and the atomic path cannot drift into writing different
+// columns.
+const auditInsert = `INSERT INTO audit_events (subject,global_user_id,action,resource_type,resource_id,request_id,source_ip,metadata) VALUES ($1,$2,$3,$4,$5,$6,$7,$8::jsonb)`
+
+func auditArgs(event AuditEvent) []any {
+	metaJSON, _ := json.Marshal(event.Metadata)
+	return []any{event.Subject, event.GlobalUserID, event.Action, event.ResourceType, event.ResourceID, event.RequestID, event.SourceIP, string(metaJSON)}
 }
 
 func (db *DB) ListAudit(ctx context.Context, limit int) ([]AuditEvent, error) {

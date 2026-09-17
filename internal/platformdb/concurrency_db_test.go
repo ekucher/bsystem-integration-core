@@ -160,7 +160,7 @@ func TestConcurrentScopeGrantsConvergeOnOneRow(t *testing.T) {
 	}
 
 	const workers = 12
-	errs := release(workers, func(int) error { return db.AddScopeGrant(ctx, grant) })
+	errs := release(workers, func(int) error { return db.AddScopeGrant(ctx, grant, testAudit("rbac.scope.granted")) })
 	for index, err := range errs {
 		if err != nil {
 			t.Fatalf("granting worker %d: %v", index, err)
@@ -185,9 +185,9 @@ func TestConcurrentScopeGrantsConvergeOnOneRow(t *testing.T) {
 	// or an error is not.
 	mixed := release(workers, func(index int) error {
 		if index%2 == 0 {
-			return db.AddScopeGrant(ctx, grant)
+			return db.AddScopeGrant(ctx, grant, testAudit("rbac.scope.granted"))
 		}
-		return db.DeleteScopeGrant(ctx, grant)
+		return db.DeleteScopeGrant(ctx, grant, testAudit("rbac.scope.revoked"))
 	})
 	for index, err := range mixed {
 		if err != nil {

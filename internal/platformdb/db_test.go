@@ -89,7 +89,7 @@ func TestPersistenceLifecycle(t *testing.T) {
 	}
 
 	grant := ScopeGrant{PrincipalType: "user", PrincipalID: globalUserID, ScopeType: "project", ScopeID: "PR-000123", PermissionID: "projects.task.read"}
-	if err := db.AddScopeGrant(ctx, grant); err != nil {
+	if err := db.AddScopeGrant(ctx, grant, testAudit("rbac.scope.granted")); err != nil {
 		t.Fatalf("add scope grant: %v", err)
 	}
 	grants, err := db.ListScopeGrants(ctx, "user", globalUserID)

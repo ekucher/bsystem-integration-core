@@ -312,3 +312,20 @@ func containsEvent(events []OutboxEvent, eventID string) bool {
 	}
 	return false
 }
+
+// testAudit is the record a scope grant carries in tests.
+//
+// The grant and its record are one transaction now, so every test that grants
+// a scope also writes an audit row. It is a helper rather than a literal at
+// each site because the columns that matter are the ones the fail-closed
+// policy relies on — who, and against what.
+func testAudit(action string) AuditEvent {
+	return AuditEvent{
+		Subject:      "test-subject",
+		GlobalUserID: "USR-000001",
+		Action:       action,
+		ResourceType: "client",
+		ResourceID:   "CL-000001",
+		RequestID:    "test-request",
+	}
+}
