@@ -180,6 +180,8 @@ func (a *app) adminCreateAccount(w http.ResponseWriter, r *http.Request) {
 		created, err = a.userAdmin.UpdateUser(ctx, created.PK, nil, &active)
 		return err
 	})
+	// Drop the raw password reference before any error handling or audit work.
+	input.Password = ""
 	if err != nil {
 		a.writeUserAdminMutationError(w, r, err)
 		return
