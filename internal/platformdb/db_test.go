@@ -48,6 +48,24 @@ func TestPersistenceLifecycle(t *testing.T) {
 		t.Fatalf("identity Global ID is not stable: first=%q second=%q created=%v", globalUserID, again, createdAgain)
 	}
 
+	identities, err := db.ListIdentities(ctx)
+	if err != nil {
+		t.Fatalf("list identities: %v", err)
+	}
+	foundIdentity := false
+	for _, item := range identities {
+		if item.Subject != subject {
+			continue
+		}
+		foundIdentity = true
+		if item.ID != globalUserID || item.Username != "test-user" || !hasValue(item.Groups, "BSYSTEM-QA") {
+			t.Fatalf("unexpected listed identity: %#v", item)
+		}
+	}
+	if !foundIdentity {
+		t.Fatalf("identity %q missing from directory", subject)
+	}
+
 	serviceSubject := "service-subject-" + suffix
 	globalServiceID, serviceCreated, err := db.EnsureServiceIdentity(ctx, ServiceIdentity{Subject: serviceSubject, Name: "CI Service", Username: "svc-ci", Groups: []string{"BSYSTEM-Services"}})
 	if err != nil {
@@ -78,6 +96,22 @@ func TestPersistenceLifecycle(t *testing.T) {
 	}
 	if !hasValue(admin.Roles, "Administrator") || !hasValue(admin.Permissions, "*") {
 		t.Fatalf("unexpected administrator access: %#v", admin)
+	}
+
+	manager, err := db.ResolveAccess(ctx, []string{"BSYSTEM-Managers"}, "human")
+	if err != nil {
+		t.Fatalf("resolve manager access: %v", err)
+	}
+	if !hasValue(manager.Permissions, "identity.user.read") {
+		t.Fatalf("manager is missing identity.user.read: %#v", manager)
+	}
+
+	support, err := db.ResolveAccess(ctx, []string{"BSYSTEM-Support"}, "human")
+	if err != nil {
+		t.Fatalf("resolve support access: %v", err)
+	}
+	if !hasValue(support.Permissions, "identity.user.read") {
+		t.Fatalf("support is missing identity.user.read: %#v", support)
 	}
 
 	serviceAccess, err := db.ResolveAccess(ctx, []string{"BSYSTEM-Services"}, "service")

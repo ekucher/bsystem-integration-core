@@ -1299,6 +1299,36 @@ paths:
         '403': {$ref: '#/components/responses/Forbidden'}
         '503': {$ref: '#/components/responses/DependencyUnavailable'}
 
+  /api/v1/admin/users:
+    get:
+      tags: [Administration]
+      operationId: listHumanUsers
+      summary: List persistent human identities
+      description: |
+        Requires `identity.user.read`. Returns identities that have
+        successfully authenticated through the platform at least once.
+        authentik remains authoritative for credentials and account activation.
+      responses:
+        '200':
+          description: Persistent human identities and immutable Global User IDs.
+          content:
+            application/json:
+              schema:
+                type: array
+                items: {$ref: '#/components/schemas/HumanIdentity'}
+              example:
+                - id: USR-000005
+                  subject: 7b0c5f5e7dcf4d0a
+                  email: admin@example.invalid
+                  display_name: Platform Administrator
+                  username: admin
+                  groups: [BSYSTEM-Admins]
+                  first_seen_at: '2026-09-17T10:00:00Z'
+                  last_seen_at: '2026-09-18T01:00:00Z'
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '503': {$ref: '#/components/responses/DependencyUnavailable'}
+
   /api/v1/admin/rbac/roles:
     get:
       tags: [Administration]
@@ -2406,6 +2436,9 @@ components:
             `scope_store_unavailable` — the grant could not be stored. Like
             the allocation failure below, the summary carries no database
             detail and a `request_id` instead.
+            `identity_store_unavailable` — the persistent human identity
+            directory could not be read. The response carries no database
+            detail and includes a `request_id` for correlation.
             `rate_limited` — the authenticated principal has spent its
             allowance for this class of surface. The response carries
             `Retry-After` in seconds.
@@ -2427,6 +2460,7 @@ components:
             - invalid_scope_type
             - unknown_permission
             - scope_store_unavailable
+            - identity_store_unavailable
             - audit_unavailable
             - rate_limited
             - adapter_not_configured
@@ -2623,6 +2657,23 @@ components:
         request_id: {type: string, description: Correlates the event with the originating request.}
         source_ip: {type: string}
         metadata: {type: object, additionalProperties: true}
+
+    HumanIdentity:
+      type: object
+      description: |
+        Integration Core-owned identity state. The record exists only after the
+        user has authenticated successfully at least once; account activation
+        and credentials remain authentik-owned.
+      required: [id, subject, email, display_name, username, groups, first_seen_at, last_seen_at]
+      properties:
+        id: {type: string, description: Immutable `USR-*` Global User ID., pattern: "^USR-[0-9]+$"}
+        subject: {type: string, description: Stable OIDC subject issued by authentik.}
+        email: {type: string}
+        display_name: {type: string}
+        username: {type: string}
+        groups: {type: array, items: {type: string}}
+        first_seen_at: {type: string, format: date-time}
+        last_seen_at: {type: string, format: date-time}
 
     Role:
       type: object

@@ -78,3 +78,49 @@ ON CONFLICT (source,entity_type,source_id) DO NOTHING`, globalID, identity.Subje
 	}
 	return globalID, created, nil
 }
+
+func (db *DB) ListIdentities(ctx context.Context) ([]IdentityView, error) {
+	rows, err := db.pool.Query(ctx, `
+SELECT
+    global_user_id,
+    subject,
+    email,
+    display_name,
+    username,
+    groups_json,
+    first_seen_at,
+    last_seen_at
+FROM identities
+ORDER BY username, global_user_id
+`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	result := []IdentityView{}
+	for rows.Next() {
+		var item IdentityView
+		var groupsJSON []byte
+		if err := rows.Scan(
+			&item.ID,
+			&item.Subject,
+			&item.Email,
+			&item.DisplayName,
+			&item.Username,
+			&groupsJSON,
+			&item.FirstSeenAt,
+			&item.LastSeenAt,
+		); err != nil {
+			return nil, err
+		}
+		if err := json.Unmarshal(groupsJSON, &item.Groups); err != nil {
+			return nil, fmt.Errorf("decode identity groups: %w", err)
+		}
+		result = append(result, item)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return result, nil
+}

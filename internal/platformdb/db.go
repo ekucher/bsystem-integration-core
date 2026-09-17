@@ -36,6 +36,17 @@ type Identity struct {
 	Groups       []string
 }
 
+type IdentityView struct {
+	ID          string    `json:"id"`
+	Subject     string    `json:"subject"`
+	Email       string    `json:"email"`
+	DisplayName string    `json:"display_name"`
+	Username    string    `json:"username"`
+	Groups      []string  `json:"groups"`
+	FirstSeenAt time.Time `json:"first_seen_at"`
+	LastSeenAt  time.Time `json:"last_seen_at"`
+}
+
 type Module struct {
 	ID          string `json:"id"`
 	Name        string `json:"name"`

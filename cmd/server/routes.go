@@ -92,6 +92,7 @@ func routes() []route {
 		{Method: http.MethodGet, Path: "/api/v1/notifications", Auth: authHuman, Handler: func(a *app) http.HandlerFunc { return a.listNotifications }},
 		{Method: http.MethodPost, Path: "/api/v1/notifications/{id}/read", Auth: authHuman, Handler: func(a *app) http.HandlerFunc { return a.markNotificationRead }},
 		{Method: http.MethodGet, Path: "/api/v1/audit", Auth: authHuman, Permission: "*", Handler: func(a *app) http.HandlerFunc { return a.auditEvents }},
+		{Method: http.MethodGet, Path: "/api/v1/admin/users", Auth: authHuman, Permission: "identity.user.read", Handler: func(a *app) http.HandlerFunc { return a.adminUsers }},
 		{Method: http.MethodGet, Path: "/api/v1/admin/rbac/roles", Auth: authHuman, Permission: "*", Handler: func(a *app) http.HandlerFunc { return a.adminRoles }},
 		{Method: http.MethodGet, Path: "/api/v1/admin/rbac/scopes", Auth: authHuman, Permission: "*", Handler: func(a *app) http.HandlerFunc { return a.adminListScopes }},
 		{Method: http.MethodPost, Path: "/api/v1/admin/rbac/scopes", Auth: authHuman, Permission: "*", Handler: func(a *app) http.HandlerFunc { return a.adminAddScope }},
