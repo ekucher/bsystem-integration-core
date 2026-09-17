@@ -106,6 +106,13 @@ func TestPersistenceLifecycle(t *testing.T) {
 		t.Fatalf("manager is missing identity.user.read: %#v", manager)
 	}
 
+	if !hasValue(manager.Permissions, "identity.user.manage") {
+		t.Fatalf("manager is missing identity.user.manage: %#v", manager)
+	}
+	if hasValue(manager.Permissions, "identity.user.admin") {
+		t.Fatalf("manager must not receive identity.user.admin: %#v", manager)
+	}
+
 	support, err := db.ResolveAccess(ctx, []string{"BSYSTEM-Support"}, "human")
 	if err != nil {
 		t.Fatalf("resolve support access: %v", err)
