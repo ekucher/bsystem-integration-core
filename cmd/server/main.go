@@ -16,6 +16,7 @@ import (
 
 	"github.com/ekucher/bsystem-integration-core/internal/ai"
 	"github.com/ekucher/bsystem-integration-core/internal/authz"
+	"github.com/ekucher/bsystem-integration-core/internal/oidc"
 	"github.com/ekucher/bsystem-integration-core/internal/platformdb"
 	"github.com/ekucher/bsystem-integration-core/internal/search"
 	"github.com/nats-io/nats.go"
@@ -81,6 +82,14 @@ type app struct {
 	// in-memory provider is the default, so search answers honestly with an
 	// empty index rather than failing as unconfigured.
 	searchProvider search.Provider
+	// tokens validates bearer tokens locally. Nil means the platform asks
+	// authentik's UserInfo endpoint instead, which is the default and the only
+	// thing that works with an opaque access token. See identity.go.
+	tokens *oidc.Verifier
+	// limits bounds how often one principal may reach an expensive surface.
+	// Always non-nil: a nil map would make every route unlimited, which is
+	// the failure mode a limiter exists to prevent.
+	limits *limits
 }
 
 // accessFrom returns the resolved access of the human caller.
@@ -204,10 +213,15 @@ func (a *app) authenticate(next http.Handler) http.Handler {
 			writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "missing bearer token"})
 			return
 		}
-		info, err := fetchUserInfo(r.Context(), strings.TrimPrefix(header, "Bearer "))
+		info, err := a.identify(r.Context(), strings.TrimPrefix(header, "Bearer "))
 		if err != nil {
+			status, message := authenticationStatus(err)
+			// The token is never logged, and neither is any part of it. The
+			// reason is, because "which of the checks refused this" is what a
+			// person debugging a deployment needs and is not something an
+			// attacker learns from their own token.
 			logger.WarnContext(r.Context(), "authentication failed", "error", err.Error())
-			writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "invalid or expired token"})
+			writeJSON(w, status, map[string]string{"error": message})
 			return
 		}
 		username := info.PreferredUsername
@@ -493,7 +507,7 @@ func main() {
 			defer nc.Close()
 		}
 	}
-	a := &app{db: db, nc: nc, authz: authz.New(db, authz.DefaultConfinedRoles()), searchProvider: searchProvider(), aiProvider: aiProviderFromEnv()}
+	a := &app{db: db, nc: nc, authz: authz.New(db, authz.DefaultConfinedRoles()), searchProvider: searchProvider(), aiProvider: aiProviderFromEnv(), tokens: tokenVerifier(), limits: newLimits()}
 	a.registerPlatformMetrics()
 	a.registerBuildMetrics()
 
