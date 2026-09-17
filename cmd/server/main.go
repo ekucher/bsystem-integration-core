@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/ekucher/bsystem-integration-core/internal/ai"
+	"github.com/ekucher/bsystem-integration-core/internal/authentikadmin"
 	"github.com/ekucher/bsystem-integration-core/internal/authz"
 	"github.com/ekucher/bsystem-integration-core/internal/oidc"
 	"github.com/ekucher/bsystem-integration-core/internal/platformdb"
@@ -70,9 +71,10 @@ const (
 )
 
 type app struct {
-	db    *platformdb.DB
-	nc    *nats.Conn
-	authz *authz.Evaluator
+	db        *platformdb.DB
+	nc        *nats.Conn
+	authz     *authz.Evaluator
+	userAdmin *authentikadmin.Client
 	// aiProvider is the language model the gateway calls. It is always
 	// non-nil: the fake provider is the default, so the gateway's
 	// authorization, classification and audit behaviour is exercised in every
@@ -507,7 +509,16 @@ func main() {
 			defer nc.Close()
 		}
 	}
-	a := &app{db: db, nc: nc, authz: authz.New(db, authz.DefaultConfinedRoles()), searchProvider: searchProvider(), aiProvider: aiProviderFromEnv(), tokens: tokenVerifier(), limits: newLimits()}
+	a := &app{
+		db: db,
+		nc: nc,
+		authz: authz.New(db, authz.DefaultConfinedRoles()),
+		userAdmin: authentikadmin.New(os.Getenv("AUTHENTIK_ADMIN_URL"), os.Getenv("AUTHENTIK_ADMIN_TOKEN")),
+		searchProvider: searchProvider(),
+		aiProvider: aiProviderFromEnv(),
+		tokens: tokenVerifier(),
+		limits: newLimits(),
+	}
 	a.registerPlatformMetrics()
 	a.registerBuildMetrics()
 
