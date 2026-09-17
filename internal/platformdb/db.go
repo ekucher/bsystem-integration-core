@@ -394,6 +394,19 @@ func (db *DB) CreateGlobalEntity(ctx context.Context, entityType, source, source
 		}
 		return GlobalEntity{}, err
 	}
+	// Queued only here, on the path that actually minted an identifier. The
+	// two paths above return an identifier that already existed, and the
+	// handler used to publish global_id.created on all three — so calling the
+	// allocation endpoint twice for one source record announced two creations
+	// of a thing that was created once.
+	if err := queueDurableEvent(ctx, tx, "global_id.created", globalID, tenantID, map[string]any{
+		"global_id":   globalID,
+		"entity_type": entityType,
+		"source":      source,
+		"source_id":   sourceID,
+	}); err != nil {
+		return GlobalEntity{}, err
+	}
 	if err := tx.Commit(ctx); err != nil {
 		return GlobalEntity{}, err
 	}

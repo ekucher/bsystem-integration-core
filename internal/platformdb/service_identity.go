@@ -75,6 +75,15 @@ ON CONFLICT (source,entity_type,source_id) DO NOTHING`, globalID, identity.Subje
 		if err != nil {
 			return "", false, err
 		}
+		// A machine identity appearing for the first time is a security event
+		// as much as an operational one, and it happens once per subject
+		// ever. Same transaction, same reason as identity.created.
+		if err := queueDurableEvent(ctx, tx, "service_identity.created", globalID, "", map[string]any{
+			"global_service_id": globalID,
+			"subject":           identity.Subject,
+		}); err != nil {
+			return "", false, err
+		}
 	}
 
 	if err := tx.Commit(ctx); err != nil {

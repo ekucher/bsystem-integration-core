@@ -60,6 +60,19 @@ ON CONFLICT (source,entity_type,source_id) DO NOTHING`, globalID, identity.Subje
 		}
 	}
 
+	// The announcement joins the allocation's transaction. A USR-* is minted
+	// once in the lifetime of an OIDC subject and cannot be re-derived from a
+	// later event, so a consumer that misses this one has no second chance at
+	// it. Queueing it here means it exists if and only if the identity does.
+	if created {
+		if err := queueDurableEvent(ctx, tx, "identity.created", globalID, "", map[string]any{
+			"global_user_id": globalID,
+			"subject":        identity.Subject,
+		}); err != nil {
+			return "", false, err
+		}
+	}
+
 	if err := tx.Commit(ctx); err != nil {
 		return "", false, err
 	}

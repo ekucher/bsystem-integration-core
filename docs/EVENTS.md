@@ -11,6 +11,7 @@ is refused at publication rather than normalized into something plausible.
 
 ```json
 {
+  "event_id": "8f1d2b40-6c3a-4e57-9a11-2b7c5d0e4f38",
   "event": "backup.failed",
   "source": "bsystem-operations",
   "actor_id": "SVC-000001",
@@ -22,6 +23,10 @@ is refused at publication rather than normalized into something plausible.
   "data": { "message": "nightly backup exited 1" }
 }
 ```
+
+`event_id` is minted by the platform, never by the publisher: a caller-supplied
+id would let one service claim another's and make a consumer discard a real
+event as a duplicate.
 
 `actor_id` and `request_id` are filled from the calling identity and the
 request correlation id when a publisher omits them, so an event can always be
@@ -48,8 +53,9 @@ reporter pastes logs, addresses and occasionally a credential.
 
 | Event | Published when |
 | --- | --- |
-| `identity.created` | an authentik subject is seen for the first time |
-| `service_identity.created` | a service identity is seen for the first time |
+| `identity.created` | an authentik subject is seen for the first time (durable) |
+| `service_identity.created` | a service identity is seen for the first time (durable) |
+| `global_id.created` | a Global ID is minted for a source record (durable) |
 | `incident.created` | a support record is raised |
 | `incident.updated` | a support record changes |
 | `incident.resolved` | a support record reaches `resolved` |
@@ -63,17 +69,88 @@ Any service identity holding `events.publish` may publish others through
 
 ## Delivery guarantees
 
-**Publication is best effort and never fails the request that caused it.** An
-event is a description of something that already happened; refusing the change
-because the description could not be delivered would lose the change to make a
-secondary effect look atomic.
+Every event is in one of two categories, and the category is decided by one
+question: **can a consumer that missed this event recover what it says by
+reading the platform afterwards?**
 
-That is a real trade, not a shrug: a subscriber can miss an event, so nothing
-may treat the bus as the only record of a change. The database is the record;
-the bus is the notification. Outcomes are counted on
-`bsystem_events_published_total` by event and result, because "nothing happened"
-and "everything failed to publish" look identical on a dashboard that counts
-only successes.
+### Durable
+
+| Event | Why |
+| --- | --- |
+| `identity.created` | a `USR-*` is minted once in the lifetime of an OIDC subject |
+| `service_identity.created` | a `SVC-*` is minted once in the lifetime of a service subject |
+| `global_id.created` | a Global ID is minted once per source record, and is immutable |
+
+These three announce an allocation that happens exactly once and can never
+happen again. There is no later event that restates it and no way for a
+consumer to tell "I missed the announcement" from "it never happened", so
+losing one is losing it for good.
+
+They are written to a **transactional outbox** — a row in `event_outbox`,
+inserted in the same transaction as the allocation itself. The row exists if
+and only if the allocation committed: an event cannot be published for a
+transaction that rolled back, and an allocation cannot commit while its
+announcement is lost to a broker that happened to be down. Nothing is
+published from the request path.
+
+A publisher loop drains the table and publishes to **JetStream**, marking a row
+delivered **only on a broker acknowledgement**. Core NATS has no per-message
+ack — `nc.Publish` returns as soon as the bytes reach a socket buffer — so
+treating that as delivery would put a durable table in front of a silent loss.
+
+- Retries are exponential and **bounded** (`MaxOutboxAttempts`). A row that
+  exhausts its budget is marked failed and **kept**, because the point of a
+  durable event is that somebody can still find out it was never delivered.
+- A publisher that dies between claiming a row and delivering it leaves the row
+  due again after its backoff. There is no crash bookkeeping to get wrong.
+- Two Cores against one database take disjoint rows (`FOR UPDATE SKIP LOCKED`),
+  so a pair drains faster rather than delivering everything twice.
+- A Core that starts while NATS is down still queues events and delivers them
+  when the broker returns.
+
+### Best effort
+
+Everything else: the support events, the operations reporter's events, and
+anything a service identity publishes through `POST /api/service/v1/events`.
+
+Each of these describes a record that stays readable through the API, so a
+consumer that missed one can fetch the current state. Publication never fails
+the request that caused it: an event is a description of something that already
+happened, and refusing the change because the description could not be
+delivered would lose the change to make a secondary effect look atomic.
+
+That is a real trade, not a shrug. **Nothing may treat the bus as the only
+record of a change.** The database is the record; the bus is the notification.
+
+### The loss and duplication windows
+
+| | Loss | Duplication | Ordering |
+| --- | --- | --- | --- |
+| Durable | none while PostgreSQL holds the row; a row that exhausts its retry budget is failed and visible, never dropped | possible: a redelivery after an acknowledgement lost on the way back. JetStream collapses it inside a 5-minute duplicate window by `Nats-Msg-Id`, and `event_id` is the consumer's own defence outside it | by `occurred_at` within one publisher; none across publishers |
+| Best effort | the whole broker outage: events produced while NATS is unreachable are dropped | none from the platform; NATS itself may redeliver | none |
+
+### Idempotency expected of consumers
+
+Every published envelope carries `event_id`, immutable and unique to one
+occurrence. **A consumer that sees the same `event_id` twice has seen the same
+event twice** and must treat the second as a no-op. That is the whole contract:
+the platform does not promise exactly-once delivery, it promises an identifier
+that makes exactly-once *processing* possible.
+
+`occurred_at` is when the thing happened, not when it was delivered. A durable
+event delivered after a two-hour outage carries the time of the allocation, so
+a consumer ordering by it does not place the event after the outage.
+
+### Metrics
+
+- `bsystem_events_published_total{event,outcome}` — best-effort publication.
+- `bsystem_event_outbox_attempts_total{subject,outcome}` — durable delivery
+  attempts. `ack_not_recorded` is the one that needs a person: the broker has
+  the event and the platform could not write that down, so it will be published
+  again and the consumer's deduplication is what keeps it correct.
+- `bsystem_event_outbox_events{state}` — queued, retrying, failed. A queued
+  count that keeps climbing is a broker outage being survived. A failed count
+  above zero is an event nobody will ever receive.
 
 ## Notifications
 
@@ -91,6 +168,9 @@ platform that notifies on everything trains people to ignore it. See
 Subjects are `bsystem.events.<event>`, so `bsystem.events.>` subscribes to
 everything and `bsystem.events.backup.*` to one family.
 
-A consumer must tolerate duplicates and gaps. There is no ordering guarantee
-across events, and `occurred_at` is the publisher's clock rather than the
-platform's.
+A consumer must tolerate duplicates, and gaps in the best-effort events. There
+is no ordering guarantee across events. `occurred_at` is the publisher's clock
+for a published envelope and the platform's own for the three durable events.
+
+Deduplicate on `event_id`. See **Delivery guarantees** above for which events
+survive a broker outage and which do not.

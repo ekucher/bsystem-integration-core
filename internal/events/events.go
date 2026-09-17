@@ -7,6 +7,11 @@ import (
 )
 
 type Envelope struct {
+	// EventID is immutable and unique to one occurrence. A consumer that sees
+	// the same id twice has seen the same event twice: the outbox retries
+	// until a broker acknowledges, and an acknowledgement that is lost on the
+	// way back produces a redelivery rather than a second event.
+	EventID    string         `json:"event_id,omitempty"`
 	Event      string         `json:"event"`
 	Source     string         `json:"source"`
 	ActorID    string         `json:"actor_id,omitempty"`
@@ -24,6 +29,7 @@ func (e *Envelope) Normalize(now time.Time) error {
 	e.ActorID = strings.TrimSpace(e.ActorID)
 	e.EntityID = strings.TrimSpace(e.EntityID)
 	e.TenantID = strings.TrimSpace(e.TenantID)
+	e.EventID = strings.TrimSpace(e.EventID)
 	e.Severity = strings.TrimSpace(strings.ToLower(e.Severity))
 	if e.Event == "" || e.Source == "" {
 		return errors.New("event and source are required")

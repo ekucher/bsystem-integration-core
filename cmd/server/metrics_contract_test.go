@@ -67,11 +67,16 @@ var published = map[string]series{
 	// No panel yet, but each exists because its absence is invisible: a
 	// pipeline that has silently stopped looks exactly like one with nothing
 	// to do.
-	"bsystem_audit_writes_total":         {"counter", []string{"action", "outcome"}},
-	"bsystem_notifications_raised_total": {"counter", []string{"event", "outcome"}},
-	"bsystem_search_operations_total":    {"counter", []string{"operation", "outcome"}},
-	"bsystem_operations_events_total":    {"counter", []string{"event", "severity"}},
-	"bsystem_ai_requests_total":          {"counter", []string{"provider", "result"}},
+	"bsystem_audit_writes_total": {"counter", []string{"action", "outcome"}},
+	// Durable event delivery. The gauge is the one an alert wants: a queued
+	// count that keeps climbing is a broker outage being survived, and a
+	// failed count above zero is an event nobody will ever receive.
+	"bsystem_event_outbox_attempts_total": {"counter", []string{"outcome", "subject"}},
+	"bsystem_event_outbox_events":         {"gauge", []string{"state"}},
+	"bsystem_notifications_raised_total":  {"counter", []string{"event", "outcome"}},
+	"bsystem_search_operations_total":     {"counter", []string{"operation", "outcome"}},
+	"bsystem_operations_events_total":     {"counter", []string{"event", "severity"}},
+	"bsystem_ai_requests_total":           {"counter", []string{"provider", "result"}},
 }
 
 // exposition is one scrape, parsed.
@@ -207,6 +212,7 @@ func metricsApp(t *testing.T) (exposition, string) {
 	upstream.CircuitRejected("espocrm")
 	auditWrites.Inc("global_id.created", "written")
 	eventsPublished.Inc("client.updated", "ok")
+	outboxAttempts.Inc("bsystem.events.identity.created", "delivered")
 	notificationsRaised.Inc("client.updated", "ok")
 	searchIndexed.Inc("index", "ok")
 	operationsReported.Inc("server.offline", "high")
