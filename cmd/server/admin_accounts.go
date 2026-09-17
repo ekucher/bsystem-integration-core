@@ -188,8 +188,9 @@ var (
 	errUsernameConflict  = errors.New("username already exists")
 	errHumanGroupMissing = errors.New("required BSYSTEM group is missing")
 	errLastAdmin          = errors.New("final active administrator cannot be removed")
-	errServiceIdentity    = errors.New("service identity cannot be managed as a human")
-	errNotHumanAccount    = errors.New("account has no BSYSTEM human role")
+	errServiceIdentity     = errors.New("service identity cannot be managed as a human")
+	errNotHumanAccount     = errors.New("account has no BSYSTEM human role")
+	errPasswordUnsupported = errors.New("password reset is only supported for internal users")
 )
 
 func (a *app) adminUpdateAccount(w http.ResponseWriter, r *http.Request) {
@@ -334,7 +335,7 @@ func (a *app) adminSetAccountPassword(w http.ResponseWriter, r *http.Request) {
 			return errNotHumanAccount
 		}
 		if user.Type != "internal" {
-			return errors.New("password can only be reset for internal users")
+			return errPasswordUnsupported
 		}
 		username = user.Username
 		return a.userAdmin.SetPassword(ctx, pk, input.Password)
@@ -393,6 +394,8 @@ func (a *app) writeUserAdminMutationError(w http.ResponseWriter, r *http.Request
 		writeJSON(w, http.StatusConflict, map[string]string{"error": "service identity cannot be managed as a human", "code": "service_identity"})
 	case errors.Is(err, errNotHumanAccount):
 		writeJSON(w, http.StatusConflict, map[string]string{"error": "account has no BSYSTEM human role", "code": "role_conflict"})
+	case errors.Is(err, errPasswordUnsupported):
+		writeJSON(w, http.StatusConflict, map[string]string{"error": "password reset is only supported for internal users", "code": "password_unsupported"})
 	case errors.Is(err, errHumanGroupMissing):
 		logger.ErrorContext(r.Context(), "required BSYSTEM human group is missing", "error", err.Error())
 		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "user administration configuration is incomplete", "code": "user_admin_unavailable", "request_id": requestIDFrom(r.Context())})
@@ -552,7 +555,10 @@ func hasGroup(groups []authentikadmin.Group, name string) bool {
 func activeAdminCount(users []authentikadmin.User) int {
 	count := 0
 	for _, user := range users {
-		if user.IsActive && hasGroup(user.GroupsObj, "BSYSTEM-Admins") {
+		service := hasGroup(user.GroupsObj, "BSYSTEM-Services") ||
+			user.Type == "service_account" ||
+			user.Type == "internal_service_account"
+		if user.IsActive && !service && hasGroup(user.GroupsObj, "BSYSTEM-Admins") {
 			count++
 		}
 	}
