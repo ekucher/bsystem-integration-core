@@ -32,7 +32,7 @@ func TestClientLifecycle(t *testing.T) {
 		case r.Method == http.MethodGet && r.URL.Path == "/api/v3/core/groups/":
 			_ = json.NewEncoder(w).Encode(map[string]any{
 				"pagination": map[string]any{"next": 0},
-				"results": []map[string]any{{"pk": "group-1", "name": "BSYSTEM-Support"}},
+				"results":    []map[string]any{{"pk": "group-1", "name": "BSYSTEM-Support"}},
 			})
 		case r.Method == http.MethodPost && r.URL.Path == "/api/v3/core/users/":
 			var body map[string]any
