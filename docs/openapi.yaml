@@ -2436,6 +2436,9 @@ components:
             `scope_store_unavailable` — the grant could not be stored. Like
             the allocation failure below, the summary carries no database
             detail and a `request_id` instead.
+            `identity_store_unavailable` — the persistent human identity
+            directory could not be read. The response carries no database
+            detail and includes a `request_id` for correlation.
             `rate_limited` — the authenticated principal has spent its
             allowance for this class of surface. The response carries
             `Retry-After` in seconds.
@@ -2457,6 +2460,7 @@ components:
             - invalid_scope_type
             - unknown_permission
             - scope_store_unavailable
+            - identity_store_unavailable
             - audit_unavailable
             - rate_limited
             - adapter_not_configured
