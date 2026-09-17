@@ -510,14 +510,14 @@ func main() {
 		}
 	}
 	a := &app{
-		db: db,
-		nc: nc,
-		authz: authz.New(db, authz.DefaultConfinedRoles()),
-		userAdmin: authentikadmin.New(os.Getenv("AUTHENTIK_ADMIN_URL"), os.Getenv("AUTHENTIK_ADMIN_TOKEN")),
+		db:             db,
+		nc:             nc,
+		authz:          authz.New(db, authz.DefaultConfinedRoles()),
+		userAdmin:      authentikadmin.New(os.Getenv("AUTHENTIK_ADMIN_URL"), os.Getenv("AUTHENTIK_ADMIN_TOKEN")),
 		searchProvider: searchProvider(),
-		aiProvider: aiProviderFromEnv(),
-		tokens: tokenVerifier(),
-		limits: newLimits(),
+		aiProvider:     aiProviderFromEnv(),
+		tokens:         tokenVerifier(),
+		limits:         newLimits(),
 	}
 	a.registerPlatformMetrics()
 	a.registerBuildMetrics()
