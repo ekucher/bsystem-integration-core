@@ -159,6 +159,10 @@ func requestID(next http.Handler) http.Handler {
 		}
 		w.Header().Set("X-Request-ID", id)
 		ctx := context.WithValue(r.Context(), requestIDContextKey, id)
+		// The store layer queues durable events inside the transactions it
+		// runs, and an event nobody can trace back to a request is half a
+		// trail. Set once here rather than threaded through every call.
+		ctx = platformdb.WithCorrelationID(ctx, id)
 		next.ServeHTTP(w, r.WithContext(ctx))
 	})
 }
@@ -210,16 +214,16 @@ func (a *app) authenticate(next http.Handler) http.Handler {
 		if username == "" {
 			username = info.Email
 		}
-		globalUserID, created, err := a.db.EnsureIdentity(r.Context(), platformdb.Identity{
+		// The "created" flag used to decide whether to publish identity.created
+		// from here. The allocation queues that event in its own transaction
+		// now, so the caller no longer needs to know.
+		globalUserID, _, err := a.db.EnsureIdentity(r.Context(), platformdb.Identity{
 			Subject: info.Sub, Email: info.Email, DisplayName: info.Name, Username: username, Groups: unique(info.Groups),
 		})
 		if err != nil {
 			logger.ErrorContext(r.Context(), "identity persistence failed", "error", err.Error())
 			writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "identity persistence unavailable"})
 			return
-		}
-		if created {
-			a.publish("identity.created", map[string]any{"global_user_id": globalUserID, "subject": info.Sub})
 		}
 		// Access is resolved once per request rather than per handler, so a
 		// single request cannot observe two different authorization states.
@@ -410,7 +414,9 @@ func (a *app) createGlobalID(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	a.audit(r, access, "global_id.created", input.EntityType, entity.GlobalID, map[string]any{"source": input.Source, "source_id": input.SourceID})
-	a.publish("global_id.created", entity)
+	// The event is queued by the allocation itself, in its transaction, and
+	// only when an identifier was actually minted. See
+	// internal/platformdb/outbox.go.
 	writeJSON(w, http.StatusCreated, entity)
 }
 
@@ -451,7 +457,18 @@ func main() {
 
 	var nc *nats.Conn
 	if natsURL := os.Getenv("NATS_URL"); natsURL != "" {
-		nc, err = nats.Connect(natsURL, nats.Name("bsystem-integration-core"), nats.Timeout(5*time.Second), nats.MaxReconnects(-1))
+		// RetryOnFailedConnect is what makes a broker that is down at startup
+		// a delay rather than a permanent condition. Without it a Core that
+		// booted a second before NATS came up held a nil connection for the
+		// rest of its life: every event it produced was counted "unavailable"
+		// and dropped, /readyz reported nats degraded forever, and only a
+		// restart fixed it. The durable outbox would have queued behind a
+		// broker this process had decided did not exist.
+		nc, err = nats.Connect(natsURL,
+			nats.Name("bsystem-integration-core"),
+			nats.Timeout(5*time.Second),
+			nats.RetryOnFailedConnect(true),
+			nats.MaxReconnects(-1))
 		if err != nil {
 			logger.Warn("NATS unavailable at startup", "error", err.Error())
 			nc = nil
@@ -462,6 +479,19 @@ func main() {
 	a := &app{db: db, nc: nc, authz: authz.New(db, authz.DefaultConfinedRoles()), searchProvider: searchProvider(), aiProvider: aiProviderFromEnv()}
 	a.registerPlatformMetrics()
 	a.registerBuildMetrics()
+
+	// The durable half of event delivery. It runs whether or not NATS was
+	// reachable at startup: events keep being queued by the transactions that
+	// cause them, and this drains them when a broker is there. A core that
+	// started without one therefore still delivers, which the request-path
+	// publish it replaced could not do.
+	outboxCtx, stopOutbox := context.WithCancel(context.Background())
+	defer stopOutbox()
+	if nc != nil {
+		go a.runOutbox(outboxCtx, newJetStreamPublisher(nc), outboxInterval())
+	} else {
+		logger.Warn("durable events will be queued but not delivered", "reason", "NATS_URL is not configured or was unreachable at startup")
+	}
 
 	// Said once, at the moment somebody is watching a deployment. A metric is
 	// how this stays visible afterwards; a log line is how it gets noticed at

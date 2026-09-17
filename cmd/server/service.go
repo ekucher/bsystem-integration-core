@@ -156,14 +156,13 @@ func (a *app) authenticateService(next http.Handler) http.Handler {
 			name = username
 		}
 		groups := unique(info.Groups)
-		globalID, created, err := a.db.EnsureServiceIdentity(r.Context(), platformdb.ServiceIdentity{Subject: info.Sub, Name: name, Username: username, Groups: groups})
+		// See the note in main.go: service_identity.created is queued by the
+		// allocation, inside its transaction.
+		globalID, _, err := a.db.EnsureServiceIdentity(r.Context(), platformdb.ServiceIdentity{Subject: info.Sub, Name: name, Username: username, Groups: groups})
 		if err != nil {
 			logger.ErrorContext(r.Context(), "service identity persistence failed", "error", err.Error())
 			writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "service identity persistence unavailable"})
 			return
-		}
-		if created {
-			a.publish("service_identity.created", map[string]any{"global_service_id": globalID, "subject": info.Sub})
 		}
 		profile, err := a.db.ResolveAccess(r.Context(), groups, "service")
 		if err != nil {
@@ -206,6 +205,12 @@ func (a *app) servicePublishEvent(w http.ResponseWriter, r *http.Request) {
 	}
 	if envelope.RequestID == "" {
 		envelope.RequestID = requestIDFrom(r.Context())
+	}
+	// A caller-supplied id would let one service claim another's event id and
+	// make a consumer discard a real event as a duplicate. The platform mints
+	// it, as it does for its own durable events.
+	if id, err := platformdb.NewEventID(); err == nil {
+		envelope.EventID = id
 	}
 	if err := envelope.Normalize(time.Now()); err != nil {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})

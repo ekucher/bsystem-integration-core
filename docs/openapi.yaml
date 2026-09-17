@@ -2657,10 +2657,19 @@ components:
       description: |
         The normalized platform event envelope. Only `event` and `source` are
         required from a publisher; the platform fills the rest in during
-        normalization, so every published envelope carries `occurred_at`,
-        `severity`, `actor_id` and `request_id`.
+        normalization, so every published envelope carries `event_id`,
+        `occurred_at`, `severity`, `actor_id` and `request_id`.
       required: [event, source]
       properties:
+        event_id:
+          type: string
+          format: uuid
+          readOnly: true
+          description: |
+            Immutable and unique to one occurrence. Minted by the platform; a
+            value sent by a publisher is ignored. A consumer that sees the same
+            `event_id` twice has seen the same event twice and must treat the
+            second as a no-op.
         event:
           type: string
           description: '`entity.action` naming, e.g. `backup.failed`.'

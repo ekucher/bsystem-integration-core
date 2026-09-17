@@ -80,6 +80,33 @@ func (a *app) registerPlatformMetrics() {
 		},
 	)
 
+	// The queue itself, sampled. The counter above says what delivery is
+	// doing; this says whether it is keeping up. A queued count that climbs
+	// while attempts fail is a broker outage being survived; a failed count
+	// above zero is an event that will never be delivered without somebody
+	// looking.
+	metricsRegistry.GaugeFunc(
+		"bsystem_event_outbox_events",
+		"Durable events in the outbox, by state.",
+		[]string{"state"},
+		func() []observability.Sample {
+			return sample(func(ctx gocontext.Context) []observability.Sample {
+				counts, err := a.db.OutboxState(ctx)
+				if err != nil {
+					// A database that cannot be read cannot report a queue
+					// depth. Emitting zeroes would draw an empty queue during
+					// exactly the outage where the queue matters most.
+					return nil
+				}
+				return []observability.Sample{
+					{Labels: []string{"queued"}, Value: float64(counts.Queued)},
+					{Labels: []string{"retrying"}, Value: float64(counts.Retried)},
+					{Labels: []string{"failed"}, Value: float64(counts.Failed)},
+				}
+			})
+		},
+	)
+
 	metricsRegistry.GaugeFunc(
 		"bsystem_nats_up",
 		"NATS availability (1=connected, 0=not connected).",
@@ -162,6 +189,24 @@ var auditWrites = metricsRegistry.Counter(
 	"bsystem_audit_writes_total",
 	"Audit records written, by action and outcome.",
 	"action", "outcome",
+)
+
+// outboxAttempts counts durable-event delivery attempts by subject and
+// outcome.
+//
+// The three outcomes are not decoration. "delivered" is a broker
+// acknowledgement. "failed" is an attempt that will be retried, and a rate of
+// it that does not fall is a broker problem rather than a platform one.
+// "ack_not_recorded" is the one that needs a person: the broker has the event
+// and the platform could not write that down, so the event will be published
+// again and the consumer's own deduplication is what keeps it correct.
+//
+// The subject is a label and the event id is not: subjects are a small closed
+// set, an event id is one time series per event.
+var outboxAttempts = metricsRegistry.Counter(
+	"bsystem_event_outbox_attempts_total",
+	"Durable event delivery attempts, by subject and outcome.",
+	"subject", "outcome",
 )
 
 // notificationsRaised counts notifications the platform raised from events,
