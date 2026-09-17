@@ -446,3 +446,45 @@ func TestNoIssuerMeansNotConfigured(t *testing.T) {
 		t.Errorf("whitespace issuer = %v, want ErrNotConfigured", err)
 	}
 }
+
+// The discovery document decides what the platform fetches next. Without a
+// constraint on it, a provider that has been misconfigured — or an answer from
+// something else on the network — can point the Core at any address it can
+// reach, and in the worst case the platform loads signing keys from there.
+//
+// Every OIDC provider publishes its key set under the issuer's own host, so
+// the constraint costs a correct deployment nothing.
+func TestAKeySetSomewhereOtherThanTheIssuerIsRefused(t *testing.T) {
+	elsewhere := newProvider(t)
+
+	redirecting := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/.well-known/openid-configuration" {
+			w.WriteHeader(http.StatusNotFound)
+			return
+		}
+		// The issuer is its own, so the check that the document names the
+		// issuer it was fetched from passes. The key set is not.
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"issuer":   "http://" + r.Host,
+			"jwks_uri": elsewhere.issuer + "/jwks",
+		})
+	}))
+	t.Cleanup(redirecting.Close)
+
+	verifier, err := New(Config{Issuer: redirecting.URL, Audience: "bsystem-hub"})
+	if err != nil {
+		t.Fatalf("new: %v", err)
+	}
+	// A token signed by the other provider's key, which is exactly what the
+	// redirection would make acceptable.
+	token := elsewhere.mint(t, "key-1", func(_, claims map[string]any) {
+		claims["iss"] = redirecting.URL
+	})
+	_, err = verifier.Verify(context.Background(), token)
+	if err == nil {
+		t.Fatal("a token was accepted using keys fetched from an address the discovery document chose")
+	}
+	if !errors.Is(err, ErrProviderUnavailable) {
+		t.Errorf("error = %v, want one identifying the provider's configuration as the problem", err)
+	}
+}

@@ -87,6 +87,20 @@ A refusal is always the same message to the caller. Telling somebody *which*
 check their token failed tells an attacker which of their guesses was closest.
 The reason is logged; **the token never is**, in whole or in part.
 
+### The discovery document is not trusted to redirect
+
+Two things are checked about it, because it decides what the platform fetches
+next:
+
+- it must **name the issuer it was fetched from**. A document naming somebody
+  else is a misconfiguration or a redirect somebody arranged, and following it
+  means taking keys from whoever answered.
+- its `jwks_uri` must be on the **issuer's own origin**. Without that, the
+  document chooses any address the Core can reach, and the platform makes an
+  outbound request somewhere it was never told about — in the worst case
+  loading signing keys from it. Every OIDC provider publishes its key set under
+  the issuer's host, so a correct deployment pays nothing for this.
+
 ## Key rotation
 
 A token naming a `kid` the platform does not hold triggers one refresh of the

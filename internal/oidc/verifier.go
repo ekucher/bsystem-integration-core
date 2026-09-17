@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"strings"
 	"sync"
 	"time"
@@ -325,7 +326,42 @@ func (v *Verifier) discover(ctx context.Context) (string, error) {
 	if document.JWKSURI == "" {
 		return "", fmt.Errorf("%w: discovery names no jwks_uri", ErrProviderUnavailable)
 	}
+	// The key set has to live where the issuer lives.
+	//
+	// Without this the discovery document decides what the platform fetches
+	// next, and a provider that has been misconfigured — or an answer from
+	// something else on the network — can point the Core at any address it
+	// can reach. The platform would then make an outbound request somewhere
+	// it was never told about, and in the worst case load signing keys from
+	// it.
+	//
+	// authentik publishes its key set under the same host as its issuer, as
+	// every OIDC provider does, so the constraint costs nothing.
+	issuerOrigin, err := originOf(v.config.Issuer)
+	if err != nil {
+		return "", fmt.Errorf("%w: the configured issuer is not a usable URL", ErrProviderUnavailable)
+	}
+	keysOrigin, err := originOf(document.JWKSURI)
+	if err != nil {
+		return "", fmt.Errorf("%w: discovery names a jwks_uri that is not a usable URL", ErrProviderUnavailable)
+	}
+	if keysOrigin != issuerOrigin {
+		return "", fmt.Errorf("%w: discovery points its key set at %s, which is not the issuer's origin", ErrProviderUnavailable, keysOrigin)
+	}
 	return document.JWKSURI, nil
+}
+
+// originOf returns scheme://host:port, which is the part that decides who the
+// platform is talking to.
+func originOf(raw string) (string, error) {
+	parsed, err := url.Parse(raw)
+	if err != nil {
+		return "", err
+	}
+	if parsed.Scheme == "" || parsed.Host == "" {
+		return "", errors.New("not an absolute URL")
+	}
+	return parsed.Scheme + "://" + parsed.Host, nil
 }
 
 func (v *Verifier) get(ctx context.Context, url string) ([]byte, error) {
