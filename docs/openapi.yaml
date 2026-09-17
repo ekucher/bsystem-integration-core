@@ -2662,7 +2662,18 @@ components:
         and credentials remain authentik-owned.
       required: [id, subject, email, display_name, username, groups, first_seen_at, last_seen_at]
       properties:
-        id: {type: string, description: Immutable `USR-*` Global User ID., pattern: '^USR-[0-9]+      required: [id, name, kind, description, enabled, permissions, modules]
+        id: {type: string, description: Immutable `USR-*` Global User ID., pattern: "^USR-[0-9]+$"}
+        subject: {type: string, description: Stable OIDC subject issued by authentik.}
+        email: {type: string}
+        display_name: {type: string}
+        username: {type: string}
+        groups: {type: array, items: {type: string}}
+        first_seen_at: {type: string, format: date-time}
+        last_seen_at: {type: string, format: date-time}
+
+    Role:
+      type: object
+      required: [id, name, kind, description, enabled, permissions, modules]
       properties:
         id: {type: string}
         name: {type: string}
@@ -2671,7 +2682,6 @@ components:
         enabled: {type: boolean}
         permissions: {type: array, items: {type: string}}
         modules: {type: array, items: {type: string}}
-
     ScopeGrant:
       type: object
       description: |
