@@ -238,7 +238,9 @@ func (a *app) adminUpdateAccount(w http.ResponseWriter, r *http.Request) {
 		if err != nil {
 			return err
 		}
-		if hasGroup(before.GroupsObj, "BSYSTEM-Services") {
+		if hasGroup(before.GroupsObj, "BSYSTEM-Services") ||
+			before.Type == "service_account" ||
+			before.Type == "internal_service_account" {
 			return errServiceIdentity
 		}
 		currentRoles := rolesFromGroups(groupNames(before.GroupsObj))
@@ -282,14 +284,12 @@ func (a *app) adminUpdateAccount(w http.ResponseWriter, r *http.Request) {
 		if input.Active != nil {
 			resultActive = *input.Active
 		}
-		resultRole := ""
+		resultAdmin := hasString(currentRoles, "admin")
 		if input.Role != nil {
-			resultRole = requestedRole
-		} else if len(currentRoles) == 1 {
-			resultRole = currentRoles[0]
+			resultAdmin = requestedRole == "admin"
 		}
 
-		if before.IsActive && hasString(currentRoles, "admin") && (!resultActive || resultRole != "admin") {
+		if before.IsActive && hasString(currentRoles, "admin") && (!resultActive || !resultAdmin) {
 			users, err := a.userAdmin.ListUsers(ctx)
 			if err != nil {
 				return err
@@ -422,9 +422,18 @@ func (a *app) writeUserAdminMutationError(w http.ResponseWriter, r *http.Request
 		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "user administration configuration is incomplete", "code": "user_admin_unavailable", "request_id": requestIDFrom(r.Context())})
 	default:
 		var apiErr *authentikadmin.APIError
-		if errors.As(err, &apiErr) && apiErr.Status == http.StatusNotFound {
-			writeJSON(w, http.StatusNotFound, map[string]string{"error": "user not found", "code": "not_found"})
-			return
+		if errors.As(err, &apiErr) {
+			switch apiErr.Status {
+			case http.StatusBadRequest:
+				writeJSON(w, http.StatusBadRequest, map[string]string{
+					"error": "authentik rejected the user input",
+					"code":  "user_admin_rejected",
+				})
+				return
+			case http.StatusNotFound:
+				writeJSON(w, http.StatusNotFound, map[string]string{"error": "user not found", "code": "not_found"})
+				return
+			}
 		}
 		a.writeUserAdminDependencyError(w, r, err)
 	}
