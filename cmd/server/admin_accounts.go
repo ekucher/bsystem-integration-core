@@ -39,18 +39,18 @@ var humanGroupRoles = func() map[string]string {
 }()
 
 type adminAccount struct {
-	AuthentikID       *int       `json:"authentik_id,omitempty"`
-	GlobalID          *string    `json:"global_id,omitempty"`
-	Username          string     `json:"username"`
-	Name              string     `json:"name"`
-	Email             string     `json:"email"`
-	Active            *bool      `json:"active,omitempty"`
-	Roles             []string   `json:"roles"`
-	Groups            []string   `json:"groups"`
-	FirstSeenAt       *time.Time `json:"first_seen_at,omitempty"`
-	LastSeenAt        *time.Time `json:"last_seen_at,omitempty"`
-	Manageable        bool       `json:"manageable"`
-	PasswordManageable bool      `json:"password_manageable"`
+	AuthentikID        *int       `json:"authentik_id,omitempty"`
+	GlobalID           *string    `json:"global_id,omitempty"`
+	Username           string     `json:"username"`
+	Name               string     `json:"name"`
+	Email              string     `json:"email"`
+	Active             *bool      `json:"active,omitempty"`
+	Roles              []string   `json:"roles"`
+	Groups             []string   `json:"groups"`
+	FirstSeenAt        *time.Time `json:"first_seen_at,omitempty"`
+	LastSeenAt         *time.Time `json:"last_seen_at,omitempty"`
+	Manageable         bool       `json:"manageable"`
+	PasswordManageable bool       `json:"password_manageable"`
 }
 
 type adminAccountsResponse struct {
@@ -193,13 +193,13 @@ func (a *app) adminCreateAccount(w http.ResponseWriter, r *http.Request) {
 }
 
 var (
-	errUsernameConflict  = errors.New("username already exists")
-	errHumanGroupMissing = errors.New("required BSYSTEM group is missing")
-	errLastAdmin          = errors.New("final active administrator cannot be removed")
+	errUsernameConflict    = errors.New("username already exists")
+	errHumanGroupMissing   = errors.New("required BSYSTEM group is missing")
+	errLastAdmin           = errors.New("final active administrator cannot be removed")
 	errServiceIdentity     = errors.New("service identity cannot be managed as a human")
 	errNotHumanAccount     = errors.New("account has no BSYSTEM human role")
 	errPasswordUnsupported = errors.New("password reset is only supported for internal users")
-	errAdminTarget          = errors.New("administrator-class user management requires administrator access")
+	errAdminTarget         = errors.New("administrator-class user management requires administrator access")
 )
 
 func (a *app) adminUpdateAccount(w http.ResponseWriter, r *http.Request) {
