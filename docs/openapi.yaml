@@ -1299,6 +1299,36 @@ paths:
         '403': {$ref: '#/components/responses/Forbidden'}
         '503': {$ref: '#/components/responses/DependencyUnavailable'}
 
+  /api/v1/admin/users:
+    get:
+      tags: [Administration]
+      operationId: listHumanUsers
+      summary: List persistent human identities
+      description: |
+        Requires `identity.user.read`. Returns identities that have
+        successfully authenticated through the platform at least once.
+        authentik remains authoritative for credentials and account activation.
+      responses:
+        '200':
+          description: Persistent human identities and immutable Global User IDs.
+          content:
+            application/json:
+              schema:
+                type: array
+                items: {$ref: '#/components/schemas/HumanIdentity'}
+              example:
+                - id: USR-000005
+                  subject: 7b0c5f5e7dcf4d0a
+                  email: admin@example.invalid
+                  display_name: Platform Administrator
+                  username: admin
+                  groups: [BSYSTEM-Admins]
+                  first_seen_at: '2026-09-17T10:00:00Z'
+                  last_seen_at: '2026-09-18T01:00:00Z'
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '503': {$ref: '#/components/responses/DependencyUnavailable'}
+
   /api/v1/admin/rbac/roles:
     get:
       tags: [Administration]
@@ -2623,6 +2653,109 @@ components:
         request_id: {type: string, description: Correlates the event with the originating request.}
         source_ip: {type: string}
         metadata: {type: object, additionalProperties: true}
+
+    HumanIdentity:
+      type: object
+      description: |
+        Integration Core-owned identity state. The record exists only after the
+        user has authenticated successfully at least once; account activation
+        and credentials remain authentik-owned.
+      required: [id, subject, email, display_name, username, groups, first_seen_at, last_seen_at]
+      properties:
+        id: {type: string, description: Immutable `USR-*` Global User ID., pattern: '^USR-[0-9]+      required: [id, name, kind, description, enabled, permissions, modules]
+      properties:
+        id: {type: string}
+        name: {type: string}
+        kind: {type: string, enum: [human, service]}
+        description: {type: string}
+        enabled: {type: boolean}
+        permissions: {type: array, items: {type: string}}
+        modules: {type: array, items: {type: string}}
+
+    ScopeGrant:
+      type: object
+      description: |
+        A permission granted to a principal within one scope. Evaluation denies
+        by default: a resource with no matching grant is refused.
+      required: [principal_type, principal_id, scope_type, scope_id, permission_id]
+      properties:
+        principal_type: {type: string, enum: [user, service, group]}
+        principal_id: {type: string}
+        scope_type: {type: string, enum: [global, tenant, client, project, resource]}
+        scope_id: {type: string, description: '`*` grants the permission across the whole scope type.'}
+        permission_id: {type: string}
+
+    ServicePrincipal:
+      type: object
+      required: [id, subject, groups, roles, permissions]
+      properties:
+        id: {type: string, description: Immutable `SVC-*` Global ID., pattern: '^SVC-[0-9]+$'}
+        subject: {type: string}
+        name: {type: string}
+        username: {type: string}
+        groups: {type: array, items: {type: string}}
+        roles: {type: array, items: {type: string}}
+        permissions: {type: array, items: {type: string}}
+
+    AdapterInfo:
+      type: object
+      required: [id, name, version, status, capabilities]
+      properties:
+        id: {type: string}
+        name: {type: string}
+        version: {type: string}
+        status: {type: string, enum: [ready, degraded, disabled]}
+        capabilities: {type: array, items: {type: string}}
+
+    AdapterHealth:
+      type: object
+      required: [status]
+      properties:
+        status: {type: string, enum: [ready, degraded, disabled]}
+        message:
+          type: string
+          description: |
+            A credential-safe explanation of a non-ready state. It never
+            carries an API key, an Authorization header or an upstream payload.
+
+    EventEnvelope:
+      type: object
+      description: |
+        The normalized platform event envelope. Only `event` and `source` are
+        required from a publisher; the platform fills the rest in during
+        normalization, so every published envelope carries `event_id`,
+        `occurred_at`, `severity`, `actor_id` and `request_id`.
+      required: [event, source]
+      properties:
+        event_id:
+          type: string
+          format: uuid
+          readOnly: true
+          description: |
+            Immutable and unique to one occurrence. Minted by the platform; a
+            value sent by a publisher is ignored. A consumer that sees the same
+            `event_id` twice has seen the same event twice and must treat the
+            second as a no-op.
+        event:
+          type: string
+          description: '`entity.action` naming, e.g. `backup.failed`.'
+          pattern: '^[a-z0-9_]+(\.[a-z0-9_]+)+$'
+        source: {type: string, description: The publishing system.}
+        actor_id: {type: string, description: Defaults to the publishing service identity.}
+        entity_id: {type: string, description: The subject Global ID, when the event has one.}
+        tenant_id: {type: string}
+        severity: {type: string, enum: [debug, info, warning, error, critical], default: info}
+        occurred_at: {type: string, format: date-time, description: Defaults to the time of publication. Always present on a published envelope.}
+        request_id: {type: string, description: Defaults to the request correlation id.}
+        data: {type: object, additionalProperties: true}
+}
+        subject: {type: string, description: Stable OIDC subject issued by authentik.}
+        email: {type: string}
+        display_name: {type: string}
+        username: {type: string}
+        groups: {type: array, items: {type: string}}
+        first_seen_at: {type: string, format: date-time}
+        last_seen_at: {type: string, format: date-time}
 
     Role:
       type: object
