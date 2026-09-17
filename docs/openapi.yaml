@@ -658,6 +658,7 @@ paths:
             application/json:
               schema: {$ref: '#/components/schemas/Error'}
               example: {error: 'the requested context is credential-classified and cannot be sent to a model', code: credential_context}
+        '429': {$ref: '#/components/responses/TooManyRequests'}
         '503':
           description: The provider could not be reached, or context assembly failed.
           content:
@@ -1188,6 +1189,7 @@ paths:
               schema: {$ref: '#/components/schemas/Error'}
               example: {error: 'unknown entity type: server', code: invalid_type}
         '401': {$ref: '#/components/responses/Unauthorized'}
+        '429': {$ref: '#/components/responses/TooManyRequests'}
         '503':
           description: |
             The search provider could not be reached, or the authorization
@@ -1798,6 +1800,23 @@ components:
         application/json:
           schema: {$ref: '#/components/schemas/Error'}
           example: {error: service identity group required}
+    TooManyRequests:
+      description: |
+        The authenticated principal has spent its allowance for this class of
+        surface. `Retry-After` carries a bounded number of seconds.
+
+        The limit is counted per principal — a `USR-*` or a `SVC-*` — and per
+        Integration Core instance. One noisy caller cannot spend another's
+        allowance, and a deployment running several instances enforces the
+        limit once per instance rather than once in total.
+      headers:
+        Retry-After:
+          description: Seconds to wait before retrying. Always at least 1.
+          schema: {type: integer, minimum: 1}
+      content:
+        application/json:
+          schema: {$ref: '#/components/schemas/Error'}
+          example: {error: too many requests, code: rate_limited}
     NotFound:
       description: |
         The resource does not exist, or the caller may not learn that it does.
@@ -2387,6 +2406,9 @@ components:
             `scope_store_unavailable` — the grant could not be stored. Like
             the allocation failure below, the summary carries no database
             detail and a `request_id` instead.
+            `rate_limited` — the authenticated principal has spent its
+            allowance for this class of surface. The response carries
+            `Retry-After` in seconds.
             `audit_unavailable` — the grant or revocation was **refused**
             because its audit record could not be written. The change did not
             happen. Authorization changes are the platform's fail-closed audit
@@ -2406,6 +2428,7 @@ components:
             - unknown_permission
             - scope_store_unavailable
             - audit_unavailable
+            - rate_limited
             - adapter_not_configured
             - capability_unsupported
             - scope_required

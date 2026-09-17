@@ -99,6 +99,7 @@ func integrationApp(t *testing.T, principals map[string]map[string]any) (*app, h
 		authz:          authz.New(db, authz.DefaultConfinedRoles()),
 		searchProvider: searchProvider(),
 		aiProvider:     aiProviderFromEnv(),
+		limits:         newLimits(),
 	}
 	rememberTestDSN(application, parsed.String())
 	return application, application.handler()

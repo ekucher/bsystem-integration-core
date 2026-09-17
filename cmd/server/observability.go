@@ -209,6 +209,24 @@ var outboxAttempts = metricsRegistry.Counter(
 	"subject", "outcome",
 )
 
+// rateLimitDecisions counts requests allowed and rejected by class.
+//
+// The labels are the class and the outcome, and nothing else. A limit is
+// counted against a principal, and the principal is exactly what must not
+// appear here: a Global ID is one time series per person or per machine
+// identity, and a username, an email or a client address would put who is
+// being throttled into a metrics store that is read far more widely than the
+// audit trail.
+//
+// Which principal is being limited is answerable from the audit trail and the
+// logs. How much of each surface is being refused is answerable only from
+// here, and it is the question an operator has during an incident.
+var rateLimitDecisions = metricsRegistry.Counter(
+	"bsystem_rate_limit_decisions_total",
+	"Requests allowed and rejected by the rate limiter, by class.",
+	"class", "outcome",
+)
+
 // notificationsRaised counts notifications the platform raised from events,
 // by outcome. A mapped event that silently fails to become a notification is
 // a message nobody receives, which looks identical to a quiet week.

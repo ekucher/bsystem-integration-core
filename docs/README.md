@@ -13,6 +13,7 @@
 
 | Document | What it answers |
 | --- | --- |
+| [RATE-LIMITS.md](RATE-LIMITS.md) | what bounds an expensive surface, what the limit is counted against, and why there is no shared counter |
 | [AUTHENTICATION.md](AUTHENTICATION.md) | how a bearer token is proved genuine: local signature validation, key rotation, and what is refused |
 | [AUTHORIZATION.md](AUTHORIZATION.md) | roles, permissions, scopes, and how a decision is made |
 | [AUDIT.md](AUDIT.md) | which operations may succeed without a durable audit record, and what happens when one cannot be written |

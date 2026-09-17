@@ -33,7 +33,11 @@ type route struct {
 	// resource rather than across the platform, so a scope-confined role can
 	// reach exactly what it has been granted and nothing else.
 	ResourceScope string
-	Handler       func(*app) http.HandlerFunc
+	// Class overrides the rate-limit bucket this route falls into. Empty
+	// means it is derived from Auth, so a route added here is limited by
+	// default rather than unlimited until somebody remembers it.
+	Class   limitClass
+	Handler func(*app) http.HandlerFunc
 }
 
 // Pattern renders the route as a net/http routing pattern.
@@ -65,7 +69,7 @@ func routes() []route {
 		{Method: http.MethodGet, Path: "/api/v1/issues/{id}", Auth: authHuman, Permission: "projects.task.read", ResourceScope: authz.ScopeResource, Handler: func(a *app) http.HandlerFunc { return a.getIssue }},
 		{Method: http.MethodGet, Path: "/api/v1/documents", Auth: authHuman, Permission: "wiki.document.read", Handler: func(a *app) http.HandlerFunc { return a.listDocuments }},
 		{Method: http.MethodGet, Path: "/api/v1/documents/{id}", Auth: authHuman, Permission: "wiki.document.read", ResourceScope: authz.ScopeResource, Handler: func(a *app) http.HandlerFunc { return a.getDocument }},
-		{Method: http.MethodPost, Path: "/api/v1/ai/ask", Auth: authHuman, Permission: "ai.query", Handler: func(a *app) http.HandlerFunc { return a.aiAsk }},
+		{Method: http.MethodPost, Path: "/api/v1/ai/ask", Auth: authHuman, Permission: "ai.query", Class: limitAI, Handler: func(a *app) http.HandlerFunc { return a.aiAsk }},
 		{Method: http.MethodGet, Path: "/api/v1/ai/audit", Auth: authHuman, Permission: "*", Handler: func(a *app) http.HandlerFunc { return a.aiAudit }},
 		{Method: http.MethodGet, Path: "/api/v1/incidents", Auth: authHuman, Permission: "support.incident.read", Handler: func(a *app) http.HandlerFunc { return a.listSupportRecords }},
 		{Method: http.MethodPost, Path: "/api/v1/incidents", Auth: authHuman, Permission: "support.incident.write", Handler: func(a *app) http.HandlerFunc { return a.createSupportRecord }},
@@ -79,7 +83,7 @@ func routes() []route {
 		// Search carries no route permission: what a caller may see is decided
 		// per document, and a route permission could only be broader than
 		// that filter. See cmd/server/search.go.
-		{Method: http.MethodGet, Path: "/api/v1/search", Auth: authHuman, Handler: func(a *app) http.HandlerFunc { return a.search }},
+		{Method: http.MethodGet, Path: "/api/v1/search", Auth: authHuman, Class: limitSearch, Handler: func(a *app) http.HandlerFunc { return a.search }},
 
 		// Notifications carry no route permission: what a caller may read is
 		// decided per notification from their own audience, so a permission
@@ -123,6 +127,11 @@ func (a *app) handler() http.Handler {
 		if r.Auth != authNone && r.ResourceScope == "" {
 			handler = a.authorize(r.Permission, handler)
 		}
+		// The limit sits between the two: after authentication, because it is
+		// counted against the authenticated principal, and before
+		// authorization, because refusing early is the cheaper half of the
+		// point.
+		handler = a.limit(classOf(r), handler)
 		switch r.Auth {
 		case authHuman:
 			handler = a.authenticate(handler)

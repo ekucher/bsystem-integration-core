@@ -73,10 +73,13 @@ var published = map[string]series{
 	// failed count above zero is an event nobody will ever receive.
 	"bsystem_event_outbox_attempts_total": {"counter", []string{"outcome", "subject"}},
 	"bsystem_event_outbox_events":         {"gauge", []string{"state"}},
-	"bsystem_notifications_raised_total":  {"counter", []string{"event", "outcome"}},
-	"bsystem_search_operations_total":     {"counter", []string{"operation", "outcome"}},
-	"bsystem_operations_events_total":     {"counter", []string{"event", "severity"}},
-	"bsystem_ai_requests_total":           {"counter", []string{"provider", "result"}},
+	// Dashboard: "Rate limiting by class". The labels are deliberately the
+	// only two that are bounded: no principal, no address, no username.
+	"bsystem_rate_limit_decisions_total": {"counter", []string{"class", "outcome"}},
+	"bsystem_notifications_raised_total": {"counter", []string{"event", "outcome"}},
+	"bsystem_search_operations_total":    {"counter", []string{"operation", "outcome"}},
+	"bsystem_operations_events_total":    {"counter", []string{"event", "severity"}},
+	"bsystem_ai_requests_total":          {"counter", []string{"provider", "result"}},
 }
 
 // exposition is one scrape, parsed.
@@ -213,6 +216,7 @@ func metricsApp(t *testing.T) (exposition, string) {
 	auditWrites.Inc("global_id.created", "written")
 	eventsPublished.Inc("client.updated", "ok")
 	outboxAttempts.Inc("bsystem.events.identity.created", "delivered")
+	rateLimitDecisions.Inc("human", "allowed")
 	notificationsRaised.Inc("client.updated", "ok")
 	searchIndexed.Inc("index", "ok")
 	operationsReported.Inc("server.offline", "high")

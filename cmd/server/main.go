@@ -86,6 +86,10 @@ type app struct {
 	// authentik's UserInfo endpoint instead, which is the default and the only
 	// thing that works with an opaque access token. See identity.go.
 	tokens *oidc.Verifier
+	// limits bounds how often one principal may reach an expensive surface.
+	// Always non-nil: a nil map would make every route unlimited, which is
+	// the failure mode a limiter exists to prevent.
+	limits *limits
 }
 
 // accessFrom returns the resolved access of the human caller.
@@ -503,7 +507,7 @@ func main() {
 			defer nc.Close()
 		}
 	}
-	a := &app{db: db, nc: nc, authz: authz.New(db, authz.DefaultConfinedRoles()), searchProvider: searchProvider(), aiProvider: aiProviderFromEnv(), tokens: tokenVerifier()}
+	a := &app{db: db, nc: nc, authz: authz.New(db, authz.DefaultConfinedRoles()), searchProvider: searchProvider(), aiProvider: aiProviderFromEnv(), tokens: tokenVerifier(), limits: newLimits()}
 	a.registerPlatformMetrics()
 	a.registerBuildMetrics()
 
