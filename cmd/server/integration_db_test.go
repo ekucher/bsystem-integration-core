@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"net/http"
@@ -9,6 +10,7 @@ import (
 	"os"
 	"strconv"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -98,7 +100,55 @@ func integrationApp(t *testing.T, principals map[string]map[string]any) (*app, h
 		searchProvider: searchProvider(),
 		aiProvider:     aiProviderFromEnv(),
 	}
+	rememberTestDSN(application, parsed.String())
 	return application, application.handler()
+}
+
+// testDSNs remembers which throwaway database each fixture app was opened
+// against.
+//
+// The audit policy tests need a second connection to that same database to
+// arrange a failure the store itself cannot produce — an audit table that
+// refuses writes. Recording it here keeps that out of the store's own API: a
+// production accessor that hands out a DSN exists to be misused, and the DSN
+// carries the password.
+var (
+	testDSNMu sync.Mutex
+	testDSNs  = map[*app]string{}
+)
+
+func rememberTestDSN(application *app, dsn string) {
+	testDSNMu.Lock()
+	defer testDSNMu.Unlock()
+	testDSNs[application] = dsn
+}
+
+func testDSN(t *testing.T, application *app) string {
+	t.Helper()
+	testDSNMu.Lock()
+	defer testDSNMu.Unlock()
+	dsn, ok := testDSNs[application]
+	if !ok {
+		t.Fatal("this app was not built by integrationApp")
+	}
+	return dsn
+}
+
+// post issues an authenticated JSON POST against the fixture handler.
+func post(t *testing.T, handler http.Handler, path, token string, body any) *httptest.ResponseRecorder {
+	t.Helper()
+	encoded, err := json.Marshal(body)
+	if err != nil {
+		t.Fatalf("encode body: %v", err)
+	}
+	request := httptest.NewRequest(http.MethodPost, path, bytes.NewReader(encoded))
+	request.Header.Set("Content-Type", "application/json")
+	if token != "" {
+		request.Header.Set("Authorization", "Bearer "+token)
+	}
+	recorder := httptest.NewRecorder()
+	handler.ServeHTTP(recorder, request)
+	return recorder
 }
 
 func call(t *testing.T, handler http.Handler, method, path, token string) *httptest.ResponseRecorder {

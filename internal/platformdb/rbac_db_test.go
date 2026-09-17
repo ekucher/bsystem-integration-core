@@ -15,7 +15,7 @@ import (
 
 func grant(t *testing.T, ctx context.Context, db *DB, g ScopeGrant) {
 	t.Helper()
-	if err := db.AddScopeGrant(ctx, g); err != nil {
+	if err := db.AddScopeGrant(ctx, g, testAudit("rbac.scope.granted")); err != nil {
 		t.Fatalf("add scope grant: %v", err)
 	}
 }
@@ -161,7 +161,7 @@ func TestGrantsAreIdempotentAndDeletionRemovesOnlyTheNamedGrant(t *testing.T) {
 		t.Fatalf("expected two grants, got %d", len(grants))
 	}
 
-	if err := db.DeleteScopeGrant(ctx, first); err != nil {
+	if err := db.DeleteScopeGrant(ctx, first, testAudit("rbac.scope.revoked")); err != nil {
 		t.Fatalf("delete scope grant: %v", err)
 	}
 	if allowed(t, ctx, db, "user", "USR-000001", "client", "CL-000001", "crm.client.read") {
@@ -173,7 +173,7 @@ func TestGrantsAreIdempotentAndDeletionRemovesOnlyTheNamedGrant(t *testing.T) {
 
 	// Deleting something that is not there is not an error; a client retrying
 	// a revocation must not be told the grant vanished.
-	if err := db.DeleteScopeGrant(ctx, first); err != nil {
+	if err := db.DeleteScopeGrant(ctx, first, testAudit("rbac.scope.revoked")); err != nil {
 		t.Fatalf("deleting an absent grant must be accepted, got %v", err)
 	}
 }
@@ -403,7 +403,7 @@ func TestAScopeGrantTheCallerGotWrongNamesTheField(t *testing.T) {
 		},
 	} {
 		t.Run(probe.name, func(t *testing.T) {
-			err := db.AddScopeGrant(ctx, probe.grant)
+			err := db.AddScopeGrant(ctx, probe.grant, testAudit("rbac.scope.granted"))
 			if !errors.Is(err, probe.sentinel) {
 				t.Fatalf("error = %v, want one matching %v", err, probe.sentinel)
 			}
@@ -419,10 +419,10 @@ func TestAScopeGrantTheCallerGotWrongNamesTheField(t *testing.T) {
 	// grant applied again is the same state, which is what an administrator
 	// retrying a request means by it.
 	good := ScopeGrant{PrincipalType: "user", PrincipalID: "USR-000001", ScopeType: "client", ScopeID: "CL-000001", PermissionID: "crm.client.read"}
-	if err := db.AddScopeGrant(ctx, good); err != nil {
+	if err := db.AddScopeGrant(ctx, good, testAudit("rbac.scope.granted")); err != nil {
 		t.Fatalf("a valid grant was refused: %v", err)
 	}
-	if err := db.AddScopeGrant(ctx, good); err != nil {
+	if err := db.AddScopeGrant(ctx, good, testAudit("rbac.scope.granted")); err != nil {
 		t.Errorf("granting the same scope twice must be the same state, got %v", err)
 	}
 }

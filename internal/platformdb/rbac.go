@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"github.com/jackc/pgx/v5"
 	"sort"
 )
 
@@ -221,14 +222,33 @@ var (
 	scopeTypes     = map[string]bool{"global": true, "tenant": true, "client": true, "project": true, "resource": true}
 )
 
-func (db *DB) AddScopeGrant(ctx context.Context, grant ScopeGrant) error {
+// AddScopeGrant widens what a principal may see, and writes the record of who
+// widened it, in one transaction.
+//
+// This is the platform's fail-closed audit path. A scope grant that happened
+// without a record is the worst hole the governance layer has: the platform
+// keeps no other trace of who authorized whom, so an audit record that failed
+// to write cannot be reconstructed from anything afterwards. The write used to
+// be two statements on two connections with the audit one best-effort, which
+// meant the grant took effect and the record of it could simply not exist.
+//
+// The pair is atomic because it can be: both rows live in this database. Where
+// a mutation and its audit record cannot share a transaction, the policy is
+// fail-open and the failure is counted rather than hidden — see docs/AUDIT.md.
+func (db *DB) AddScopeGrant(ctx context.Context, grant ScopeGrant, record AuditEvent) error {
 	if !principalTypes[grant.PrincipalType] {
 		return fmt.Errorf("%w: %q", ErrInvalidPrincipalType, grant.PrincipalType)
 	}
 	if !scopeTypes[grant.ScopeType] {
 		return fmt.Errorf("%w: %q", ErrInvalidScopeType, grant.ScopeType)
 	}
-	_, err := db.pool.Exec(ctx, `
+	tx, err := db.pool.BeginTx(ctx, pgx.TxOptions{})
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback(ctx)
+
+	_, err = tx.Exec(ctx, `
 INSERT INTO principal_scopes (principal_type,principal_id,scope_type,scope_id,permission_id)
 VALUES ($1,$2,$3,$4,$5)
 ON CONFLICT DO NOTHING`, grant.PrincipalType, grant.PrincipalID, grant.ScopeType, grant.ScopeID, grant.PermissionID)
@@ -238,16 +258,44 @@ ON CONFLICT DO NOTHING`, grant.PrincipalType, grant.PrincipalID, grant.ScopeType
 	if isForeignKeyViolation(err) {
 		return fmt.Errorf("%w: %q", ErrUnknownPermission, grant.PermissionID)
 	}
-	return err
+	if err != nil {
+		return err
+	}
+	if _, err := tx.Exec(ctx, auditInsert, auditArgs(record)...); err != nil {
+		return fmt.Errorf("%w: %v", ErrAuditNotDurable, err)
+	}
+	return tx.Commit(ctx)
 }
 
-func (db *DB) DeleteScopeGrant(ctx context.Context, grant ScopeGrant) error {
-	_, err := db.pool.Exec(ctx, `
+// DeleteScopeGrant narrows what a principal may see, atomically with its
+// record. Same reasoning as AddScopeGrant: a revocation nobody can attribute
+// is as much a hole as a grant nobody can attribute, and the two are the same
+// question asked by an auditor six months later.
+func (db *DB) DeleteScopeGrant(ctx context.Context, grant ScopeGrant, record AuditEvent) error {
+	tx, err := db.pool.BeginTx(ctx, pgx.TxOptions{})
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback(ctx)
+
+	if _, err := tx.Exec(ctx, `
 DELETE FROM principal_scopes
 WHERE principal_type=$1 AND principal_id=$2 AND scope_type=$3 AND scope_id=$4 AND permission_id=$5`,
-		grant.PrincipalType, grant.PrincipalID, grant.ScopeType, grant.ScopeID, grant.PermissionID)
-	return err
+		grant.PrincipalType, grant.PrincipalID, grant.ScopeType, grant.ScopeID, grant.PermissionID); err != nil {
+		return err
+	}
+	if _, err := tx.Exec(ctx, auditInsert, auditArgs(record)...); err != nil {
+		return fmt.Errorf("%w: %v", ErrAuditNotDurable, err)
+	}
+	return tx.Commit(ctx)
 }
+
+// ErrAuditNotDurable means the mutation was refused because its audit record
+// could not be written. It is a sentinel so the HTTP layer can say that
+// rather than reporting a generic store failure: an administrator whose grant
+// was refused needs to know the grant did not happen, and an operator needs to
+// know which of the two writes was the one that failed.
+var ErrAuditNotDurable = errors.New("the change was refused because its audit record could not be written")
 
 func (db *DB) ListScopeGrants(ctx context.Context, principalType, principalID string) ([]ScopeGrant, error) {
 	rows, err := db.pool.Query(ctx, `

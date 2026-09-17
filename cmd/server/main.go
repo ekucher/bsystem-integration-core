@@ -291,8 +291,25 @@ func sourceIP(r *http.Request) string {
 	return r.RemoteAddr
 }
 
+// auditRecord builds the record without writing it, for the paths that write
+// it inside the mutation's own transaction.
+func (a *app) auditRecord(r *http.Request, access meResponse, action, resourceType, resourceID string, metadata map[string]any) platformdb.AuditEvent {
+	return platformdb.AuditEvent{
+		Subject: access.Subject, GlobalUserID: access.ID, Action: action,
+		ResourceType: resourceType, ResourceID: resourceID,
+		RequestID: requestIDFrom(r.Context()), SourceIP: sourceIP(r), Metadata: metadata,
+	}
+}
+
+// audit writes a record on the fail-open paths.
+//
+// Which paths those are, and why each one is allowed to succeed without a
+// durable record, is in docs/AUDIT.md. The short version: these describe
+// something the platform keeps its own record of, so the audit row is a
+// convenience for reading rather than the only evidence the action occurred.
+// The authorization mutations are not among them and do not come through here.
 func (a *app) audit(r *http.Request, access meResponse, action, resourceType, resourceID string, metadata map[string]any) {
-	err := a.db.InsertAudit(r.Context(), platformdb.AuditEvent{Subject: access.Subject, GlobalUserID: access.ID, Action: action, ResourceType: resourceType, ResourceID: resourceID, RequestID: requestIDFrom(r.Context()), SourceIP: sourceIP(r), Metadata: metadata})
+	err := a.db.InsertAudit(r.Context(), a.auditRecord(r, access, action, resourceType, resourceID, metadata))
 	if err != nil {
 		auditWrites.Inc(action, "failed")
 		// The request is not failed here. The action it describes has already

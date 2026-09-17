@@ -2387,6 +2387,12 @@ components:
             `scope_store_unavailable` — the grant could not be stored. Like
             the allocation failure below, the summary carries no database
             detail and a `request_id` instead.
+            `audit_unavailable` — the grant or revocation was **refused**
+            because its audit record could not be written. The change did not
+            happen. Authorization changes are the platform's fail-closed audit
+            path: the record and the change share one transaction, because a
+            grant nobody can attribute cannot be reconstructed from anything
+            afterwards.
             `global_id_allocation_failed` — the platform could not allocate.
             The summary is deliberately free of database detail and carries a
             `request_id` instead: the cause is in the platform's own logs,
@@ -2399,6 +2405,7 @@ components:
             - invalid_scope_type
             - unknown_permission
             - scope_store_unavailable
+            - audit_unavailable
             - adapter_not_configured
             - capability_unsupported
             - scope_required

@@ -325,7 +325,16 @@ func (a *app) auditAI(r *http.Request, access meResponse, requested []string, fr
 		DurationMS:       int(time.Since(started).Milliseconds()),
 	})
 	if err != nil {
+		// Counted, not only logged. An AI request that touched authorized
+		// content and left no record is the one audit hole nobody can close
+		// afterwards, and until this line it looked exactly like a quiet day
+		// on every dashboard. The request itself is not failed: the answer
+		// has already been produced and returned, and this is a fail-open
+		// path by policy — see docs/AUDIT.md.
+		auditWrites.Inc("ai.request", "failed")
 		logger.ErrorContext(r.Context(), "ai audit write failed", "error", err.Error())
+	} else {
+		auditWrites.Inc("ai.request", "written")
 	}
 	aiRequests.Inc(a.aiProvider.Name(), result)
 }
