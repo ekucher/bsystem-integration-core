@@ -30,14 +30,14 @@ type Group struct {
 }
 
 type User struct {
-	PK        int     `json:"pk"`
-	Username  string  `json:"username"`
-	Name      string  `json:"name"`
-	Email     string  `json:"email"`
-	IsActive  bool    `json:"is_active"`
-	Type      string  `json:"type"`
+	PK        int      `json:"pk"`
+	Username  string   `json:"username"`
+	Name      string   `json:"name"`
+	Email     string   `json:"email"`
+	IsActive  bool     `json:"is_active"`
+	Type      string   `json:"type"`
 	Groups    []string `json:"groups"`
-	GroupsObj []Group `json:"groups_obj"`
+	GroupsObj []Group  `json:"groups_obj"`
 }
 
 type CreateUserInput struct {
