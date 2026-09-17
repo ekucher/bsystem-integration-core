@@ -13,6 +13,7 @@
 
 | Document | What it answers |
 | --- | --- |
+| [VERSIONING.md](VERSIONING.md) | what a release promises, what counts as a breaking change, and which of those rules a machine checks |
 | [RATE-LIMITS.md](RATE-LIMITS.md) | what bounds an expensive surface, what the limit is counted against, and why there is no shared counter |
 | [AUTHENTICATION.md](AUTHENTICATION.md) | how a bearer token is proved genuine: local signature validation, key rotation, and what is refused |
 | [AUTHORIZATION.md](AUTHORIZATION.md) | roles, permissions, scopes, and how a decision is made |
