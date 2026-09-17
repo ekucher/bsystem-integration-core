@@ -574,7 +574,7 @@ paths:
           in: path
           required: true
           description: The Global ID to resolve.
-          schema: {type: string, pattern: '^[A-Z]+-[0-9]+$'}
+          schema: {type: string, pattern: "^[A-Z]+-[0-9]+$"}
           example: CL-000001
       responses:
         '200':
@@ -733,7 +733,7 @@ paths:
         - name: client_id
           in: query
           required: false
-          schema: {type: string, pattern: '^CL-[0-9]+$'}
+          schema: {type: string, pattern: "^CL-[0-9]+$"}
         - name: open
           in: query
           required: false
@@ -1075,7 +1075,7 @@ paths:
         - name: server_id
           in: query
           required: false
-          schema: {type: string, pattern: '^SRV-[0-9]+$'}
+          schema: {type: string, pattern: "^SRV-[0-9]+$"}
         - name: event
           in: query
           required: false
@@ -1885,7 +1885,7 @@ components:
       in: path
       required: true
       description: The resource's immutable platform Global ID.
-      schema: {type: string, pattern: '^[A-Z]+-[0-9]+$'}
+      schema: {type: string, pattern: "^[A-Z]+-[0-9]+$"}
       example: CL-000001
     Limit:
       name: limit
@@ -2100,7 +2100,7 @@ components:
       properties:
         id: {type: integer, format: int64}
         occurred_at: {type: string, format: date-time}
-        actor_id: {type: string, pattern: '^USR-[0-9]+$'}
+        actor_id: {type: string, pattern: "^USR-[0-9]+$"}
         provider: {type: string}
         model: {type: string}
         requested_sources:
@@ -2176,7 +2176,7 @@ components:
       type: object
       required: [id, kind, title, severity, status, reported_by, created_at, updated_at, relations, sla]
       properties:
-        id: {type: string, pattern: '^INC-[0-9]+$'}
+        id: {type: string, pattern: "^INC-[0-9]+$"}
         kind: {type: string, enum: [incident, request]}
         title: {type: string}
         summary: {type: string}
@@ -2191,7 +2191,7 @@ components:
           type: array
           items: {$ref: '#/components/schemas/SupportRelation'}
           description: Empty in a listing; populated on a detail read.
-        reported_by: {type: string, pattern: '^USR-[0-9]+$'}
+        reported_by: {type: string, pattern: "^USR-[0-9]+$"}
         created_at: {type: string, format: date-time}
         updated_at: {type: string, format: date-time}
         acknowledged_at:
@@ -2242,7 +2242,7 @@ components:
         identity is the Global ID.
       required: [id, name, environment, status, source, source_id, created_at]
       properties:
-        id: {type: string, pattern: '^SRV-[0-9]+$'}
+        id: {type: string, pattern: "^SRV-[0-9]+$"}
         name: {type: string}
         environment: {type: string, enum: [dev, stage, prod, unknown]}
         status:
@@ -2302,7 +2302,7 @@ components:
       required: [id, server_id, event, severity, source, occurred_at]
       properties:
         id: {type: integer, format: int64}
-        server_id: {type: string, pattern: '^SRV-[0-9]+$'}
+        server_id: {type: string, pattern: "^SRV-[0-9]+$"}
         event: {$ref: '#/components/schemas/OperationsEventName'}
         severity: {type: string, enum: [debug, info, warning, error, critical]}
         summary:
@@ -2318,7 +2318,7 @@ components:
       type: object
       required: [server_id, event, source]
       properties:
-        server_id: {type: string, pattern: '^SRV-[0-9]+$'}
+        server_id: {type: string, pattern: "^SRV-[0-9]+$"}
         event: {$ref: '#/components/schemas/OperationsEventName'}
         severity:
           type: string
@@ -2660,7 +2660,7 @@ components:
       description: The authenticated user and the access their groups resolve to.
       required: [id, subject, groups, roles, permissions, modules]
       properties:
-        id: {type: string, description: Immutable `USR-*` Global ID., pattern: '^USR-[0-9]+$'}
+        id: {type: string, description: Immutable `USR-*` Global ID., pattern: "^USR-[0-9]+$"}
         subject: {type: string, description: The authentik subject claim.}
         email: {type: string}
         name: {type: string}
@@ -2687,7 +2687,7 @@ components:
       description: A client, normalized from the authoritative CRM.
       required: [id, source, source_id, name]
       properties:
-        id: {type: string, pattern: '^CL-[0-9]+$'}
+        id: {type: string, pattern: "^CL-[0-9]+$"}
         source: {type: string, example: espocrm}
         source_id: {type: string, description: The identifier in the source system.}
         name: {type: string}
@@ -2700,7 +2700,7 @@ components:
       description: A contact, normalized from the authoritative CRM.
       required: [id, source, source_id, name]
       properties:
-        id: {type: string, pattern: '^CT-[0-9]+$'}
+        id: {type: string, pattern: "^CT-[0-9]+$"}
         source: {type: string, example: espocrm}
         source_id: {type: string}
         name: {type: string}
@@ -2709,7 +2709,7 @@ components:
           description: |
             The owning client's Global ID. Absent when the upstream record has
             no account, or when that account has no mapping yet.
-          pattern: '^CL-[0-9]+$'
+          pattern: "^CL-[0-9]+$"
         email: {type: string}
         phone: {type: string}
 
@@ -2718,7 +2718,7 @@ components:
       description: A project, normalized from the authoritative project system.
       required: [id, source, source_id, name, identifier]
       properties:
-        id: {type: string, pattern: '^PR-[0-9]+$'}
+        id: {type: string, pattern: "^PR-[0-9]+$"}
         source: {type: string, example: redmine}
         source_id: {type: string}
         name: {type: string}
@@ -2730,14 +2730,14 @@ components:
       description: An issue or task, normalized from the authoritative project system.
       required: [id, source, source_id, subject]
       properties:
-        id: {type: string, pattern: '^TSK-[0-9]+$'}
+        id: {type: string, pattern: "^TSK-[0-9]+$"}
         source: {type: string, example: redmine}
         source_id: {type: string}
         subject: {type: string}
         project_id:
           type: string
           description: The owning project's Global ID, when it is mapped.
-          pattern: '^PR-[0-9]+$'
+          pattern: "^PR-[0-9]+$"
         status: {type: string, description: The upstream status name.}
 
     Document:
@@ -2745,7 +2745,7 @@ components:
       description: A document, normalized from the authoritative wiki.
       required: [id, source, source_id, title]
       properties:
-        id: {type: string, pattern: '^DOC-[0-9]+$'}
+        id: {type: string, pattern: "^DOC-[0-9]+$"}
         source: {type: string, example: outline}
         source_id: {type: string}
         title: {type: string}
@@ -2773,7 +2773,7 @@ components:
       type: object
       required: [global_id, entity_type, source, source_id, created_at]
       properties:
-        global_id: {type: string, pattern: '^[A-Z]+-[0-9]+$'}
+        global_id: {type: string, pattern: "^[A-Z]+-[0-9]+$"}
         entity_type: {type: string}
         source: {type: string}
         source_id: {type: string}
@@ -2839,20 +2839,14 @@ components:
           items: {type: string}
         first_seen_at: {type: string, format: date-time}
         last_seen_at: {type: string, format: date-time}
-        manageable:
-          type: boolean
-          description: Whether this record is a human authentik account eligible for role and active-state mutation.
-        password_manageable:
-          type: boolean
-          description: Whether authentik owns a local password for this account.
+        manageable: {type: boolean}
+        password_manageable: {type: boolean}
 
     HumanAccountList:
       type: object
       required: [management_available, accounts]
       properties:
-        management_available:
-          type: boolean
-          description: False when the Integration Core has no authentik administration credential.
+        management_available: {type: boolean}
         accounts:
           type: array
           items: {$ref: '#/components/schemas/HumanAccount'}
@@ -2864,93 +2858,7 @@ components:
       properties:
         username:
           type: string
-          pattern: '^[A-Za-z0-9._@-]+      required: [id, name, kind, description, enabled, permissions, modules]
-      properties:
-        id: {type: string}
-        name: {type: string}
-        kind: {type: string, enum: [human, service]}
-        description: {type: string}
-        enabled: {type: boolean}
-        permissions: {type: array, items: {type: string}}
-        modules: {type: array, items: {type: string}}
-
-    ScopeGrant:
-      type: object
-      description: |
-        A permission granted to a principal within one scope. Evaluation denies
-        by default: a resource with no matching grant is refused.
-      required: [principal_type, principal_id, scope_type, scope_id, permission_id]
-      properties:
-        principal_type: {type: string, enum: [user, service, group]}
-        principal_id: {type: string}
-        scope_type: {type: string, enum: [global, tenant, client, project, resource]}
-        scope_id: {type: string, description: '`*` grants the permission across the whole scope type.'}
-        permission_id: {type: string}
-
-    ServicePrincipal:
-      type: object
-      required: [id, subject, groups, roles, permissions]
-      properties:
-        id: {type: string, description: Immutable `SVC-*` Global ID., pattern: '^SVC-[0-9]+$'}
-        subject: {type: string}
-        name: {type: string}
-        username: {type: string}
-        groups: {type: array, items: {type: string}}
-        roles: {type: array, items: {type: string}}
-        permissions: {type: array, items: {type: string}}
-
-    AdapterInfo:
-      type: object
-      required: [id, name, version, status, capabilities]
-      properties:
-        id: {type: string}
-        name: {type: string}
-        version: {type: string}
-        status: {type: string, enum: [ready, degraded, disabled]}
-        capabilities: {type: array, items: {type: string}}
-
-    AdapterHealth:
-      type: object
-      required: [status]
-      properties:
-        status: {type: string, enum: [ready, degraded, disabled]}
-        message:
-          type: string
-          description: |
-            A credential-safe explanation of a non-ready state. It never
-            carries an API key, an Authorization header or an upstream payload.
-
-    EventEnvelope:
-      type: object
-      description: |
-        The normalized platform event envelope. Only `event` and `source` are
-        required from a publisher; the platform fills the rest in during
-        normalization, so every published envelope carries `event_id`,
-        `occurred_at`, `severity`, `actor_id` and `request_id`.
-      required: [event, source]
-      properties:
-        event_id:
-          type: string
-          format: uuid
-          readOnly: true
-          description: |
-            Immutable and unique to one occurrence. Minted by the platform; a
-            value sent by a publisher is ignored. A consumer that sees the same
-            `event_id` twice has seen the same event twice and must treat the
-            second as a no-op.
-        event:
-          type: string
-          description: '`entity.action` naming, e.g. `backup.failed`.'
-          pattern: '^[a-z0-9_]+(\.[a-z0-9_]+)+$'
-        source: {type: string, description: The publishing system.}
-        actor_id: {type: string, description: Defaults to the publishing service identity.}
-        entity_id: {type: string, description: The subject Global ID, when the event has one.}
-        tenant_id: {type: string}
-        severity: {type: string, enum: [debug, info, warning, error, critical], default: info}
-        occurred_at: {type: string, format: date-time, description: Defaults to the time of publication. Always present on a published envelope.}
-        request_id: {type: string, description: Defaults to the request correlation id.}
-        data: {type: object, additionalProperties: true}
-
+          pattern: "^[A-Za-z0-9._@-]+$"
         name: {type: string, minLength: 1}
         email: {type: string}
         role:
@@ -3010,7 +2918,7 @@ components:
       type: object
       required: [id, subject, groups, roles, permissions]
       properties:
-        id: {type: string, description: Immutable `SVC-*` Global ID., pattern: '^SVC-[0-9]+$'}
+        id: {type: string, description: Immutable `SVC-*` Global ID., pattern: "^SVC-[0-9]+$"}
         subject: {type: string}
         name: {type: string}
         username: {type: string}
@@ -3060,7 +2968,7 @@ components:
         event:
           type: string
           description: '`entity.action` naming, e.g. `backup.failed`.'
-          pattern: '^[a-z0-9_]+(\.[a-z0-9_]+)+$'
+          pattern: "^[a-z0-9_]+(\\.[a-z0-9_]+)+$"
         source: {type: string, description: The publishing system.}
         actor_id: {type: string, description: Defaults to the publishing service identity.}
         entity_id: {type: string, description: The subject Global ID, when the event has one.}
