@@ -310,8 +310,8 @@ func (a *app) adminUpdateAccount(w http.ResponseWriter, r *http.Request) {
 	beforeRoles := rolesFromGroups(groupNames(before.GroupsObj))
 	afterRoles := rolesFromGroups(groupNames(updated.GroupsObj))
 	a.audit(r, accessFrom(r.Context()), "identity.user.updated", "user", updated.Username, map[string]any{
-		"roles_before": beforeRoles,
-		"roles_after":  afterRoles,
+		"roles_before":  beforeRoles,
+		"roles_after":   afterRoles,
 		"active_before": before.IsActive,
 		"active_after":  updated.IsActive,
 	})
