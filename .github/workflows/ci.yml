@@ -48,6 +48,7 @@ jobs:
           unformatted="$(gofmt -l .)"
           if [ -n "$unformatted" ]; then
             echo "::error::gofmt required for: $unformatted"
+            gofmt -d $unformatted
             exit 1
           fi
 
