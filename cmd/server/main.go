@@ -401,10 +401,29 @@ func (a *app) modules(w http.ResponseWriter, r *http.Request) {
 	result := []platformdb.Module{}
 	for _, item := range all {
 		if allowed[item.ID] {
-			result = append(result, item)
+			result = append(result, applyModuleLaunchOverride(item))
 		}
 	}
 	writeJSON(w, http.StatusOK, result)
+}
+
+func applyModuleLaunchOverride(item platformdb.Module) platformdb.Module {
+	var envName string
+
+	switch item.ID {
+	case "redmine":
+		envName = "MODULE_REDMINE_LAUNCH_URL"
+	case "outline":
+		envName = "MODULE_OUTLINE_LAUNCH_URL"
+	default:
+		return item
+	}
+
+	if launchURL := strings.TrimSpace(os.Getenv(envName)); launchURL != "" {
+		item.LaunchURL = launchURL
+	}
+
+	return item
 }
 
 func (a *app) createGlobalID(w http.ResponseWriter, r *http.Request) {

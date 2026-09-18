@@ -3,6 +3,8 @@ package main
 import (
 	"strings"
 	"testing"
+
+	"github.com/ekucher/bsystem-integration-core/internal/platformdb"
 )
 
 func TestUnique(t *testing.T) {
@@ -84,4 +86,63 @@ func TestEveryNormalizedEntityHasADetailEndpoint(t *testing.T) {
 			t.Errorf("%s is missing", pattern)
 		}
 	}
+}
+
+func TestApplyModuleLaunchOverride(t *testing.T) {
+	t.Run("database value is preserved when override is absent", func(t *testing.T) {
+		t.Setenv("MODULE_REDMINE_LAUNCH_URL", "")
+
+		item := platformdb.Module{
+			ID:        "redmine",
+			LaunchURL: "/modules/redmine/",
+		}
+
+		got := applyModuleLaunchOverride(item)
+		if got.LaunchURL != "/modules/redmine/" {
+			t.Fatalf("LaunchURL = %q, want database value", got.LaunchURL)
+		}
+	})
+
+	t.Run("redmine launch URL can be overridden", func(t *testing.T) {
+		t.Setenv("MODULE_REDMINE_LAUNCH_URL", "  http://localhost:18103/  ")
+
+		item := platformdb.Module{
+			ID:        "redmine",
+			LaunchURL: "/modules/redmine/",
+		}
+
+		got := applyModuleLaunchOverride(item)
+		if got.LaunchURL != "http://localhost:18103/" {
+			t.Fatalf("LaunchURL = %q, want Redmine environment override", got.LaunchURL)
+		}
+	})
+
+	t.Run("outline launch URL can be overridden", func(t *testing.T) {
+		t.Setenv("MODULE_OUTLINE_LAUNCH_URL", "http://localhost:18101/")
+
+		item := platformdb.Module{
+			ID:        "outline",
+			LaunchURL: "/modules/outline/",
+		}
+
+		got := applyModuleLaunchOverride(item)
+		if got.LaunchURL != "http://localhost:18101/" {
+			t.Fatalf("LaunchURL = %q, want Outline environment override", got.LaunchURL)
+		}
+	})
+
+	t.Run("unrelated modules ignore launch override variables", func(t *testing.T) {
+		t.Setenv("MODULE_REDMINE_LAUNCH_URL", "http://localhost:18103/")
+		t.Setenv("MODULE_OUTLINE_LAUNCH_URL", "http://localhost:18101/")
+
+		item := platformdb.Module{
+			ID:        "projects",
+			LaunchURL: "/projects/",
+		}
+
+		got := applyModuleLaunchOverride(item)
+		if got.LaunchURL != "/projects/" {
+			t.Fatalf("LaunchURL = %q, want original value", got.LaunchURL)
+		}
+	})
 }
