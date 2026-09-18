@@ -181,7 +181,7 @@ paths:
                 type: array
                 items: {$ref: '#/components/schemas/Module'}
               example:
-                - {id: projects, name: Projects, description: Project and task management, status: available}
+                - {id: projects, name: Projects, description: Project and task management, status: available, launch_url: /modules/redmine/, icon: redmine}
         '401': {$ref: '#/components/responses/Unauthorized'}
         '503': {$ref: '#/components/responses/DependencyUnavailable'}
 
@@ -2684,6 +2684,8 @@ components:
         name: {type: string}
         description: {type: string}
         status: {type: string}
+        launch_url: {type: string, description: Browser-visible relative or absolute application launch URL.}
+        icon: {type: string, description: Stable icon key rendered by the HUB.}
 
     Client:
       type: object

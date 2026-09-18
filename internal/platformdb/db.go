@@ -52,6 +52,8 @@ type Module struct {
 	Name        string `json:"name"`
 	Description string `json:"description"`
 	Status      string `json:"status"`
+	LaunchURL   string `json:"launch_url,omitempty"`
+	Icon        string `json:"icon,omitempty"`
 }
 
 type GlobalEntity struct {
@@ -324,7 +326,7 @@ ON CONFLICT (subject) DO UPDATE SET
 }
 
 func (db *DB) ListModules(ctx context.Context) ([]Module, error) {
-	rows, err := db.pool.Query(ctx, `SELECT id,name,description,status FROM modules WHERE enabled=TRUE ORDER BY sort_order,id`)
+	rows, err := db.pool.Query(ctx, `SELECT id,name,description,status,COALESCE(launch_url,''),COALESCE(icon,'') FROM modules WHERE enabled=TRUE ORDER BY sort_order,id`)
 	if err != nil {
 		return nil, err
 	}
@@ -332,7 +334,7 @@ func (db *DB) ListModules(ctx context.Context) ([]Module, error) {
 	var result []Module
 	for rows.Next() {
 		var item Module
-		if err := rows.Scan(&item.ID, &item.Name, &item.Description, &item.Status); err != nil {
+		if err := rows.Scan(&item.ID, &item.Name, &item.Description, &item.Status, &item.LaunchURL, &item.Icon); err != nil {
 			return nil, err
 		}
 		result = append(result, item)
