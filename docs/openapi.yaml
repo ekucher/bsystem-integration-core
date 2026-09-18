@@ -1382,9 +1382,10 @@ paths:
     patch:
       tags: [Administration]
       operationId: updateHumanAccount
-      summary: Change a human account role or active state
+      summary: Change a human account role, email or active state
       description: |
-        Requires `identity.user.manage`. Administrator-class targets and
+        Requires `identity.user.manage`. Email updates are validated and
+        forwarded to authentik. Administrator-class targets and
         assignments additionally require administrator access. The final active
         member of BSYSTEM-Admins cannot be disabled or moved to another role.
         BSYSTEM-Services identities are never mutable through this human API.
@@ -2880,6 +2881,11 @@ components:
           type: string
           enum: [admin, manager, developer, qa, support, devops, customer]
         active: {type: boolean}
+        email:
+          type: string
+          format: email
+          minLength: 1
+          maxLength: 320
 
     HumanAccountPassword:
       type: object
