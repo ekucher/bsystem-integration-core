@@ -110,3 +110,31 @@ func TestMergeAdminAccountsFiltersServicesAndAttachesGlobalID(t *testing.T) {
 		t.Fatalf("unexpected roles: %#v", account.Roles)
 	}
 }
+
+func TestNormalizeAccountEmail(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name string
+		raw  string
+		want string
+		ok   bool
+	}{
+		{name: "valid", raw: "user@example.com", want: "user@example.com", ok: true},
+		{name: "trim", raw: "  user@example.com  ", want: "user@example.com", ok: true},
+		{name: "empty", raw: "", ok: false},
+		{name: "display name rejected", raw: "User <user@example.com>", ok: false},
+		{name: "malformed", raw: "not-an-email", ok: false},
+	}
+
+	for _, tt := range tests {
+		tt := tt
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			got, ok := normalizeAccountEmail(tt.raw)
+			if ok != tt.ok || got != tt.want {
+				t.Fatalf("normalizeAccountEmail(%q) = (%q, %v), want (%q, %v)", tt.raw, got, ok, tt.want, tt.ok)
+			}
+		})
+	}
+}
