@@ -380,7 +380,7 @@ func (a *app) health(w http.ResponseWriter, r *http.Request) {
 	if checks["database"] == "error" {
 		code = http.StatusServiceUnavailable
 	}
-	writeJSON(w, code, healthResponse{Status: status, Service: "bsystem-integration-core", Version: "0.5.0", Timestamp: time.Now().UTC().Format(time.RFC3339), Checks: checks})
+	writeJSON(w, code, healthResponse{Status: status, Service: "bsystem-integration-core", Version: currentBuild().Version, Timestamp: time.Now().UTC().Format(time.RFC3339), Checks: checks})
 }
 
 func (a *app) me(w http.ResponseWriter, r *http.Request) {
@@ -586,7 +586,7 @@ func main() {
 
 	serverErrors := make(chan error, 1)
 	go func() {
-		logger.Info("bsystem-integration-core listening", "version", "0.6.0", "addr", addr,
+		logger.Info("bsystem-integration-core listening", "version", currentBuild().Version, "addr", addr,
 			"write_timeout", writeTimeout.String())
 		serverErrors <- server.ListenAndServe()
 	}()

@@ -19,7 +19,7 @@ import (
 // deliberately absent, because build metadata is the one thing an operator
 // pastes into a ticket without thinking about it.
 var (
-	buildVersion = "dev"
+	buildVersion = "0.6.0"
 	buildCommit  = ""
 	buildDate    = ""
 )
