@@ -158,7 +158,7 @@ func (c *Client) CreateUser(ctx context.Context, input CreateUserInput) (User, e
 	return created, nil
 }
 
-func (c *Client) UpdateUser(ctx context.Context, pk int, groups *[]string, active *bool) (User, error) {
+func (c *Client) UpdateUser(ctx context.Context, pk int, groups *[]string, active *bool, email *string) (User, error) {
 	if !c.Configured() {
 		return User{}, ErrNotConfigured
 	}
@@ -168,6 +168,9 @@ func (c *Client) UpdateUser(ctx context.Context, pk int, groups *[]string, activ
 	}
 	if active != nil {
 		body["is_active"] = *active
+	}
+	if email != nil {
+		body["email"] = *email
 	}
 	if len(body) == 0 {
 		return c.GetUser(ctx, pk)

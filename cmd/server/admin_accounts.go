@@ -6,6 +6,7 @@ import (
 	"errors"
 	"io"
 	"net/http"
+	"net/mail"
 	"regexp"
 	"sort"
 	"strconv"
@@ -69,6 +70,7 @@ type adminCreateAccountRequest struct {
 type adminUpdateAccountRequest struct {
 	Role   *string `json:"role,omitempty"`
 	Active *bool   `json:"active,omitempty"`
+	Email  *string `json:"email,omitempty"`
 }
 
 type adminPasswordRequest struct {
@@ -177,7 +179,7 @@ func (a *app) adminCreateAccount(w http.ResponseWriter, r *http.Request) {
 			return err
 		}
 		active := true
-		created, err = a.userAdmin.UpdateUser(ctx, created.PK, nil, &active)
+		created, err = a.userAdmin.UpdateUser(ctx, created.PK, nil, &active, nil)
 		return err
 	})
 	// Drop the raw password reference before any error handling or audit work.
@@ -218,9 +220,19 @@ func (a *app) adminUpdateAccount(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid JSON body", "code": "invalid_user_input"})
 		return
 	}
-	if input.Role == nil && input.Active == nil {
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "role or active is required", "code": "invalid_user_input"})
+	if input.Role == nil && input.Active == nil && input.Email == nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "role, active or email is required", "code": "invalid_user_input"})
 		return
+	}
+
+	var requestedEmail string
+	if input.Email != nil {
+		var ok bool
+		requestedEmail, ok = normalizeAccountEmail(*input.Email)
+		if !ok {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "email is invalid", "code": "invalid_user_input"})
+			return
+		}
 	}
 
 	var requestedRole string
@@ -301,7 +313,11 @@ func (a *app) adminUpdateAccount(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 
-		updated, err = a.userAdmin.UpdateUser(ctx, pk, nextGroups, input.Active)
+		var nextEmail *string
+		if input.Email != nil {
+			nextEmail = &requestedEmail
+		}
+		updated, err = a.userAdmin.UpdateUser(ctx, pk, nextGroups, input.Active, nextEmail)
 		return err
 	})
 	if err != nil {
@@ -316,6 +332,7 @@ func (a *app) adminUpdateAccount(w http.ResponseWriter, r *http.Request) {
 		"roles_after":   afterRoles,
 		"active_before": before.IsActive,
 		"active_after":  updated.IsActive,
+		"email_changed": before.Email != updated.Email,
 	})
 	identity := a.identityByUsername(r, updated.Username)
 	writeJSON(w, http.StatusOK, accountFromAuthentik(updated, identity))
@@ -439,6 +456,18 @@ func (a *app) writeUserAdminMutationError(w http.ResponseWriter, r *http.Request
 		}
 		a.writeUserAdminDependencyError(w, r, err)
 	}
+}
+
+func normalizeAccountEmail(raw string) (string, bool) {
+	email := strings.TrimSpace(raw)
+	if email == "" || len(email) > 320 {
+		return "", false
+	}
+	parsed, err := mail.ParseAddress(email)
+	if err != nil || parsed.Address != email {
+		return "", false
+	}
+	return email, true
 }
 
 func parseAuthentikID(w http.ResponseWriter, r *http.Request) (int, bool) {

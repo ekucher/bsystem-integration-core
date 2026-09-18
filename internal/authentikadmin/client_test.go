@@ -13,6 +13,7 @@ func TestClientLifecycle(t *testing.T) {
 	t.Parallel()
 
 	var sawPassword string
+	var sawUpdateEmail string
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if got := r.Header.Get("Authorization"); got != "Bearer test-token" {
 			t.Fatalf("authorization header = %q", got)
@@ -61,6 +62,9 @@ func TestClientLifecycle(t *testing.T) {
 			var body map[string]any
 			if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 				t.Fatalf("decode update body: %v", err)
+			}
+			if value, ok := body["email"].(string); ok {
+				sawUpdateEmail = value
 			}
 			w.WriteHeader(http.StatusOK)
 			_ = json.NewEncoder(w).Encode(map[string]any{
@@ -114,12 +118,16 @@ func TestClientLifecycle(t *testing.T) {
 	}
 
 	active := true
-	updated, err := client.UpdateUser(ctx, 8, nil, &active)
+	email := "updated@example.invalid"
+	updated, err := client.UpdateUser(ctx, 8, nil, &active, &email)
 	if err != nil {
 		t.Fatalf("UpdateUser: %v", err)
 	}
 	if !updated.IsActive {
 		t.Fatalf("user was not activated: %#v", updated)
+	}
+	if sawUpdateEmail != email {
+		t.Fatalf("email was not forwarded: got %q want %q", sawUpdateEmail, email)
 	}
 }
 
