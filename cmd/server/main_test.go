@@ -131,6 +131,26 @@ func TestApplyModuleLaunchOverride(t *testing.T) {
 		}
 	})
 
+	t.Run("nextcloud launch URL can be overridden", func(t *testing.T) {
+		t.Setenv(
+			"MODULE_NEXTCLOUD_LAUNCH_URL",
+			"http://localhost:18102/apps/bsystem_sso/entry",
+		)
+
+		item := platformdb.Module{
+			ID:        "nextcloud",
+			LaunchURL: "/modules/nextcloud/",
+		}
+
+		got := applyModuleLaunchOverride(item)
+		if got.LaunchURL != "http://localhost:18102/apps/bsystem_sso/entry" {
+			t.Fatalf(
+				"LaunchURL = %q, want Nextcloud environment override",
+				got.LaunchURL,
+			)
+		}
+	})
+
 	t.Run("unrelated modules ignore launch override variables", func(t *testing.T) {
 		t.Setenv("MODULE_REDMINE_LAUNCH_URL", "http://localhost:18103/")
 		t.Setenv("MODULE_OUTLINE_LAUNCH_URL", "http://localhost:18101/")
