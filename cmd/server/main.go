@@ -415,6 +415,8 @@ func applyModuleLaunchOverride(item platformdb.Module) platformdb.Module {
 		envName = "MODULE_REDMINE_LAUNCH_URL"
 	case "outline":
 		envName = "MODULE_OUTLINE_LAUNCH_URL"
+	case "nextcloud":
+		envName = "MODULE_NEXTCLOUD_LAUNCH_URL"
 	default:
 		return item
 	}
