@@ -96,7 +96,7 @@ jobs:
           output: sbom.cyclonedx.json
 
       - name: Publish the SBOM
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: sbom-integration-core
           path: sbom.cyclonedx.json
