@@ -1,4 +1,4 @@
-FROM golang:1.26-alpine AS build
+FROM golang:1.26.8-alpine AS build
 WORKDIR /src
 # go.sum is copied so the build verifies dependency checksums instead of
 # regenerating them, which would accept a substituted module silently.
