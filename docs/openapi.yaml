@@ -1451,6 +1451,120 @@ paths:
               schema: {$ref: '#/components/schemas/Error'}
         '503': {$ref: '#/components/responses/DependencyUnavailable'}
 
+  /api/v1/admin/modules:
+    get:
+      tags: [Administration]
+      operationId: listAdminModules
+      summary: List every module in the catalog, regardless of status
+      description: |
+        Requires `module.admin`. Unlike `GET /api/v1/modules` (the ordinary
+        launcher, RBAC-filtered to what the caller's own roles grant), this
+        returns every module in every status, with `allowed_roles` and
+        `updated_by`/`updated_at` — the fields an administrator edits.
+      responses:
+        '200':
+          description: The full module catalog.
+          content:
+            application/json:
+              schema:
+                type: array
+                items: {$ref: '#/components/schemas/AdminModule'}
+              example:
+                - {id: redmine, name: Redmine, description: Проєкти й задачі Redmine, status: active, launch_url: 'https://redmine.bsystem.example/', allowed_roles: [admin, manager, developer], updated_by: 'USR-000001', updated_at: '2026-09-20T10:00:00Z'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '503': {$ref: '#/components/responses/DependencyUnavailable'}
+    post:
+      tags: [Administration]
+      operationId: createAdminModule
+      summary: Register a new module in the catalog
+      description: |
+        Requires `module.admin`. A created module is always `disabled`
+        regardless of what `status` the request sends — the platform enforces
+        the safe-initial-lifecycle rule itself rather than trusting the
+        caller — and, if `launch_url` is set, it must resolve under a
+        canonical origin from `GET .../allowed-origins`.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/AdminModuleCreate'}
+      responses:
+        '201':
+          description: The module, created disabled.
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/AdminModule'}
+              example: {id: outline, name: Outline, description: Документація, status: disabled, allowed_roles: [], updated_by: 'USR-000001', updated_at: '2026-09-25T10:00:00Z'}
+        '400': {$ref: '#/components/responses/BadRequest'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '409':
+          description: A module with this id already exists.
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Error'}
+        '503': {$ref: '#/components/responses/DependencyUnavailable'}
+
+  /api/v1/admin/modules/allowed-origins:
+    get:
+      tags: [Administration]
+      operationId: listModuleAllowedOrigins
+      summary: List the canonical origins a module launch_url may use
+      description: |
+        Requires `module.admin`. Backs the admin form's origin picker
+        (ADR-006, bsystem-hub) — the same list `POST`/`PATCH
+        /api/v1/admin/modules` re-validate `launch_url` against
+        independently.
+      responses:
+        '200':
+          description: The configured allowlist. Empty when none is configured.
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/ModuleAllowedOrigins'}
+              example: {origins: ['https://redmine.bsystem.example', 'https://wiki.bsystem.example']}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+
+  /api/v1/admin/modules/{id}:
+    patch:
+      tags: [Administration]
+      operationId: updateAdminModule
+      summary: Edit a module's name, description, launch_url, status or allowed_roles
+      description: |
+        Requires `module.admin`. Every field is optional and independent —
+        an omitted field is left unchanged, never cleared. Setting `status`
+        to `active` while the resulting `allowed_roles` (this request's, or
+        already persisted) would be empty is refused: the platform never
+        lets a module go live with nobody granted to see it.
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: {type: string, pattern: "^[a-z0-9-]{1,64}$"}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/AdminModulePatch'}
+      responses:
+        '200':
+          description: The module, after the patch.
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/AdminModule'}
+        '400': {$ref: '#/components/responses/BadRequest'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '422':
+          description: The patch would activate the module with no allowed_roles.
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Error'}
+              example: {error: 'a module cannot be activated with no roles assigned — assign allowed_roles first', code: module_needs_roles}
+        '503': {$ref: '#/components/responses/DependencyUnavailable'}
+
   /api/v1/admin/rbac/roles:
     get:
       tags: [Administration]
@@ -2583,6 +2697,20 @@ components:
             The summary is deliberately free of database detail and carries a
             `request_id` instead: the cause is in the platform's own logs,
             correlated by that id, rather than in the answer.
+
+            `invalid_module_input` — the module id, name or status is missing
+            or malformed.
+            `invalid_launch_url` — `launch_url` is not `https:`, or its origin
+            is not on the platform's canonical allowlist
+            (`GET /api/v1/admin/modules/allowed-origins`). Re-validated here
+            independently of whatever the caller's own UI restricted it to.
+            `module_conflict` — a module with this id already exists.
+            `module_needs_roles` — the request would leave the module
+            `active` with `allowed_roles` empty, which the platform refuses:
+            an active module with nobody granted to see it is never a valid
+            state.
+            `module_store_unavailable` — the module registry could not be
+            read or written.
           enum:
             - upstream_unavailable
             - unsupported_entity_type
@@ -2603,6 +2731,11 @@ components:
             - password_unsupported
             - user_admin_rejected
             - audit_unavailable
+            - invalid_module_input
+            - invalid_launch_url
+            - module_conflict
+            - module_needs_roles
+            - module_store_unavailable
             - rate_limited
             - adapter_not_configured
             - capability_unsupported
@@ -2683,9 +2816,88 @@ components:
         id: {type: string}
         name: {type: string}
         description: {type: string}
-        status: {type: string}
+        status: {type: string, enum: [active, maintenance, disabled]}
         launch_url: {type: string, description: Browser-visible relative or absolute application launch URL.}
         icon: {type: string, description: Stable icon key rendered by the HUB.}
+
+    AdminModule:
+      type: object
+      description: |
+        The module-administration view of a module: everything `Module`
+        carries, plus who may see it and who last changed it. Deliberately a
+        separate schema from `Module` — `GET /api/v1/modules` (the ordinary
+        launcher, already RBAC-filtered) must never grow `allowed_roles` or
+        `updated_by`, which would let an ordinary user infer who administers
+        the catalog and which other roles exist.
+      required: [id, name, description, status, allowed_roles, updated_at]
+      properties:
+        id:
+          type: string
+          pattern: "^[a-z0-9-]{1,64}$"
+          description: Slug, chosen at creation and immutable afterwards.
+        name: {type: string}
+        description: {type: string}
+        status: {type: string, enum: [active, maintenance, disabled]}
+        launch_url: {type: string, description: Must resolve under a canonical origin — see `GET .../allowed-origins`.}
+        icon: {type: string, description: Stable icon key. Optional — the HUB falls back to the module's first letter.}
+        allowed_roles:
+          type: array
+          description: |
+            The platform roles this module is visible to, in the HumanRole
+            vocabulary (`admin`, `manager`, `developer`, `qa`, `support`,
+            `devops`, `customer`). Never absent — an empty array is how "no
+            one can see this yet" is represented, distinct from the field
+            being omitted.
+          items: {type: string, enum: [admin, manager, developer, qa, support, devops, customer]}
+        updated_by: {type: string, description: Global ID of the last actor to change this module. Absent for a row no administrator has touched yet.}
+        updated_at: {type: string, format: date-time}
+
+    ModuleAllowedOrigins:
+      type: object
+      description: |
+        The canonical origins (ADR-006, bsystem-hub) a module's `launch_url`
+        may resolve under. The admin form offers exactly this list as a
+        closed choice; the platform enforces the same list independently on
+        write, regardless of what the caller's own UI restricted it to.
+      required: [origins]
+      properties:
+        origins: {type: array, items: {type: string}}
+
+    AdminModuleCreate:
+      type: object
+      required: [id, name, description]
+      properties:
+        id:
+          type: string
+          pattern: "^[a-z0-9-]{1,64}$"
+          description: Immutable after creation.
+        name: {type: string}
+        description: {type: string}
+        status:
+          type: string
+          description: |
+            Accepted but not trusted — a created module is always `disabled`
+            regardless of this value. Present so a client that always sends
+            it (bsystem-hub does) is not rejected for an unknown field.
+        launch_url: {type: string, description: Must resolve under a canonical origin, or be omitted.}
+        allowed_roles:
+          type: array
+          items: {type: string, enum: [admin, manager, developer, qa, support, devops, customer]}
+          description: May be empty — a created module starts disabled either way.
+
+    AdminModulePatch:
+      type: object
+      description: At least one field is required. Every field is independent and optional; an omitted field is left unchanged.
+      minProperties: 1
+      properties:
+        name: {type: string}
+        description: {type: string}
+        launch_url: {type: string, description: Must resolve under a canonical origin.}
+        status: {type: string, enum: [active, maintenance, disabled]}
+        allowed_roles:
+          type: array
+          items: {type: string, enum: [admin, manager, developer, qa, support, devops, customer]}
+          description: Replaces the full set. An explicit `[]` clears all role grants; omitting the field entirely leaves them unchanged.
 
     Client:
       type: object
