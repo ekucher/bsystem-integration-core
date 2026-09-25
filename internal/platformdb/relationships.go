@@ -334,3 +334,69 @@ ORDER BY created_at`, globalID)
 	}
 	return result, rows.Err()
 }
+
+// DeleteRelationship removes one edge by its id. It never touches either
+// endpoint's global_entities row — only the entity_relationships row itself
+// is deleted — and it reports whether a row existed to delete rather than
+// erroring on a replayed delete, mirroring how the rest of this platform
+// treats "already the state you asked for" as success.
+func (db *DB) DeleteRelationship(ctx context.Context, id int64, actor RelationshipActor) (bool, error) {
+	if err := actor.validate(); err != nil {
+		return false, err
+	}
+
+	tx, err := db.pool.BeginTx(ctx, pgx.TxOptions{})
+	if err != nil {
+		return false, err
+	}
+	defer tx.Rollback(ctx)
+
+	var row Relationship
+	err = tx.QueryRow(ctx, `
+DELETE FROM entity_relationships WHERE id=$1
+RETURNING id, from_global_id, relation_type, to_global_id`,
+		id,
+	).Scan(&row.ID, &row.FromGlobalID, &row.RelationType, &row.ToGlobalID)
+	if errors.Is(err, pgx.ErrNoRows) {
+		// Nothing existed at this id. Not an error: a caller retrying a
+		// delete that already succeeded should see the same outcome as the
+		// first time, not a failure.
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+
+	auditEvent := AuditEvent{
+		GlobalUserID: actor.UserGlobalID,
+		Action:       "relationship.deleted",
+		ResourceType: "relationship",
+		ResourceID:   fmt.Sprintf("%d", row.ID),
+		RequestID:    actor.RequestID,
+		Metadata: map[string]any{
+			"from_global_id":        row.FromGlobalID,
+			"relation_type":         row.RelationType,
+			"to_global_id":          row.ToGlobalID,
+			"deleted_by_user_id":    actor.UserGlobalID,
+			"deleted_by_service_id": actor.ServiceGlobalID,
+		},
+	}
+	if _, err := tx.Exec(ctx, auditInsert, auditArgs(auditEvent)...); err != nil {
+		return false, fmt.Errorf("audit relationship deletion: %w", err)
+	}
+	if err := queueDurableEvent(ctx, tx, "relationship.deleted", row.FromGlobalID, "", map[string]any{
+		"id":                    row.ID,
+		"from_global_id":        row.FromGlobalID,
+		"relation_type":         row.RelationType,
+		"to_global_id":          row.ToGlobalID,
+		"deleted_by_user_id":    actor.UserGlobalID,
+		"deleted_by_service_id": actor.ServiceGlobalID,
+	}); err != nil {
+		return false, err
+	}
+
+	if err := tx.Commit(ctx); err != nil {
+		return false, err
+	}
+	return true, nil
+}

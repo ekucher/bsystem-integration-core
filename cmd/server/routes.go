@@ -80,6 +80,7 @@ func routes() []route {
 		{Method: http.MethodGet, Path: "/api/v1/operations/events", Auth: authHuman, Permission: "operations.server.read", Handler: func(a *app) http.HandlerFunc { return a.listOperationsEvents }},
 		{Method: http.MethodPost, Path: "/api/v1/global-ids", Auth: authHuman, Permission: "*", Handler: func(a *app) http.HandlerFunc { return a.createGlobalID }},
 		{Method: http.MethodGet, Path: "/api/v1/global-ids/{id}", Auth: authHuman, Permission: "*", Handler: func(a *app) http.HandlerFunc { return a.resolveGlobalID }},
+		{Method: http.MethodGet, Path: "/api/v1/global-ids/{id}/relationships", Auth: authHuman, Permission: "relationships.read", Handler: func(a *app) http.HandlerFunc { return a.listGlobalIDRelationships }},
 		// Search carries no route permission: what a caller may see is decided
 		// per document, and a route permission could only be broader than
 		// that filter. See cmd/server/search.go.
@@ -117,6 +118,12 @@ func routes() []route {
 		{Method: http.MethodPost, Path: "/api/service/v1/operations/events", Auth: authService, Permission: "operations.report", Handler: func(a *app) http.HandlerFunc { return a.serviceReportOperationsEvent }},
 		{Method: http.MethodPost, Path: "/api/service/v1/search/documents", Auth: authService, Permission: "search.index", Handler: func(a *app) http.HandlerFunc { return a.serviceIndexSearchDocuments }},
 		{Method: http.MethodDelete, Path: "/api/service/v1/search/documents/{id}", Auth: authService, Permission: "search.index", Handler: func(a *app) http.HandlerFunc { return a.serviceDeleteSearchDocument }},
+		// Relationships require a service identity plus a verified end-user
+		// on-behalf-of token; see cmd/server/relationships.go for why a raw
+		// header field is never trusted as the end user's identity.
+		{Method: http.MethodPost, Path: "/api/service/v1/relationships", Auth: authService, Permission: "relationships.write", Handler: func(a *app) http.HandlerFunc { return a.serviceCreateRelationship }},
+		{Method: http.MethodGet, Path: "/api/service/v1/relationships", Auth: authService, Permission: "relationships.read", Handler: func(a *app) http.HandlerFunc { return a.serviceListRelationships }},
+		{Method: http.MethodDelete, Path: "/api/service/v1/relationships/{id}", Auth: authService, Permission: "relationships.write", Handler: func(a *app) http.HandlerFunc { return a.serviceDeleteRelationship }},
 	}
 }
 

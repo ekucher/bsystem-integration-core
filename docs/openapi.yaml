@@ -589,6 +589,44 @@ paths:
         '404': {$ref: '#/components/responses/NotFound'}
         '503': {$ref: '#/components/responses/DependencyUnavailable'}
 
+  /api/v1/global-ids/{id}/relationships:
+    get:
+      tags: [Global IDs]
+      operationId: listGlobalIDRelationships
+      summary: List the relationships touching a Global ID
+      description: |
+        Requires `relationships.read`. Every edge touching `id` is returned,
+        outgoing and incoming, from `id`'s own point of view: `relation_type`
+        is the stored forward label for an outgoing edge and the derived
+        inverse for an incoming one, so a caller never has to know which
+        direction was originally recorded to read it correctly.
+
+        This lists edges only. It never returns the content of either
+        endpoint, and holding `relationships.read` grants nothing about the
+        Global IDs an edge names — reading those still goes through their own
+        endpoint and their own authorization.
+      parameters:
+        - {$ref: '#/components/parameters/GlobalID'}
+      responses:
+        '200':
+          description: The relationships touching this Global ID.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: array
+                    items: {$ref: '#/components/schemas/RelationshipView'}
+              example:
+                data:
+                  - {global_id: REQ-000004, relation_type: tests, direction: outgoing, created_at: '2026-09-16T06:10:00Z'}
+                  - {global_id: TSK-000012, relation_type: blocked-by, direction: incoming, created_at: '2026-09-16T06:12:00Z'}
+        '400': {$ref: '#/components/responses/BadRequest'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '503': {$ref: '#/components/responses/DependencyUnavailable'}
+
   /api/v1/ai/ask:
     post:
       tags: [AI]
@@ -1979,6 +2017,187 @@ paths:
         '403': {$ref: '#/components/responses/ServiceForbidden'}
         '503': {$ref: '#/components/responses/DependencyUnavailable'}
 
+  /api/service/v1/relationships:
+    post:
+      tags: [Service]
+      operationId: createRelationship
+      summary: Assert a typed relationship between two Global IDs
+      description: |
+        Requires `relationships.write`, which no human role holds directly: a
+        relationship is always written by a service on a verified human's
+        behalf, never straight from a human token.
+
+        **Requires both a service identity and a verified end user.** The
+        `Authorization` bearer proves which service is calling; a second
+        token, the end user's own, must be forwarded in `X-On-Behalf-Of` as
+        `Bearer <token>` and is independently verified through the identical
+        pipeline the human API uses to authenticate a request — local
+        signature verification or a call to authentik's own UserInfo
+        endpoint. Neither this header's presence nor any value inside it is
+        trusted on its own; only a token that verification accepts yields the
+        `USR-*` recorded as the relationship's human actor. A caller that
+        omits it, or forwards something verification rejects, is refused
+        before the relationship is touched.
+
+        `relation_type` accepts either the forward or the inverse spelling of
+        any of the eight relations the platform defines (for example `tests`
+        or `tested-by`); both resolve to the same canonical stored edge.
+
+        The operation is idempotent: asserting the same edge again, in either
+        spelling, returns `200` with the row already stored rather than
+        creating a duplicate or erroring. Both endpoints must already be
+        Global IDs the platform knows; neither is allocated as a side effect
+        of describing a relationship between them.
+      security:
+        - serviceAuth: []
+      parameters:
+        - name: X-On-Behalf-Of
+          in: header
+          required: true
+          description: |
+            The end user's own bearer access token, as `Bearer <token>`,
+            re-verified independently of the service's own `Authorization`
+            token. See the operation description for what this does and does
+            not trust.
+          schema: {type: string}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/RelationshipRequest'}
+            example: {from_global_id: TST-000012, relation_type: tests, to_global_id: REQ-000004}
+      responses:
+        '201':
+          description: The relationship was newly created.
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Relationship'}
+              example: {id: 42, from_global_id: TST-000012, relation_type: tests, to_global_id: REQ-000004, created_by_user_id: USR-000007, created_by_service_id: SVC-000003, created_at: '2026-09-16T06:10:00Z'}
+        '200':
+          description: The identical edge already existed; the row returned is the one already stored.
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Relationship'}
+        '400':
+          description: |
+            A required field is missing, `relation_type` is outside the
+            platform's vocabulary, both endpoints resolve to the same Global
+            ID, or an endpoint does not name a known Global ID.
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Error'}
+              example: {error: 'a Global ID cannot relate to itself', code: self_relationship}
+        '401':
+          description: |
+            The service's own bearer token is missing, invalid or expired, or
+            `X-On-Behalf-Of` is missing or does not verify.
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Error'}
+              example: {error: 'an on-behalf-of end-user bearer token is required', code: on_behalf_of_required}
+        '403': {$ref: '#/components/responses/ServiceForbidden'}
+        '503': {$ref: '#/components/responses/DependencyUnavailable'}
+
+    get:
+      tags: [Service]
+      operationId: listRelationshipsForService
+      summary: List the relationships touching a Global ID
+      description: |
+        Requires `relationships.read`. Identical in behaviour to
+        `GET /api/v1/global-ids/{id}/relationships`, offered under the
+        machine API as well because a service — a Redmine, QA or Outline
+        plugin rendering an edge it manages — is as legitimate a reader of a
+        relationship as a signed-in person, and requiring a human token here
+        would force every plugin to hold one it has no other use for.
+
+        No on-behalf-of token is required for this read: it discloses only
+        edge metadata already gated by `relationships.read`, never either
+        endpoint's content.
+      security:
+        - serviceAuth: []
+      parameters:
+        - name: global_id
+          in: query
+          required: true
+          description: The Global ID whose relationships are listed.
+          schema: {type: string, pattern: "^[A-Z]+-[0-9]+$"}
+          example: REQ-000004
+      responses:
+        '200':
+          description: The relationships touching this Global ID.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: array
+                    items: {$ref: '#/components/schemas/RelationshipView'}
+              example:
+                data:
+                  - {global_id: TST-000012, relation_type: tested-by, direction: incoming, created_at: '2026-09-16T06:10:00Z'}
+        '400':
+          description: '`global_id` is missing.'
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Error'}
+              example: {error: global_id is required}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '403': {$ref: '#/components/responses/ServiceForbidden'}
+        '503': {$ref: '#/components/responses/DependencyUnavailable'}
+
+  /api/service/v1/relationships/{id}:
+    delete:
+      tags: [Service]
+      operationId: deleteRelationship
+      summary: Remove a relationship
+      description: |
+        Requires `relationships.write`, and the same dual-actor requirement
+        as creating one: a verified `X-On-Behalf-Of` end-user token alongside
+        the service's own `Authorization` bearer. See `POST
+        /api/service/v1/relationships` for exactly what is and is not
+        trusted.
+
+        Only the relationship row named by `id` is removed. Neither endpoint
+        Global ID's own record is read, changed or deleted by this call — a
+        relationship never grants access to what it names, and removing one
+        does not touch what it named either.
+
+        Deleting a relationship that no longer exists succeeds: a replayed
+        delete must not read as a failure.
+      security:
+        - serviceAuth: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          description: The relationship's own numeric id, as returned by `POST /api/service/v1/relationships`.
+          schema: {type: integer, format: int64, minimum: 1}
+          example: 42
+        - name: X-On-Behalf-Of
+          in: header
+          required: true
+          description: The end user's own bearer access token, as `Bearer <token>`.
+          schema: {type: string}
+      responses:
+        '204': {description: The relationship is not in the store.}
+        '400':
+          description: '`id` is not a positive integer.'
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Error'}
+              example: {error: relationship id must be a positive integer}
+        '401':
+          description: |
+            The service's own bearer token is missing, invalid or expired, or
+            `X-On-Behalf-Of` is missing or does not verify.
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Error'}
+              example: {error: 'an on-behalf-of end-user bearer token is required', code: on_behalf_of_required}
+        '403': {$ref: '#/components/responses/ServiceForbidden'}
+        '503': {$ref: '#/components/responses/DependencyUnavailable'}
+
 components:
   securitySchemes:
     bearerAuth:
@@ -2711,6 +2930,26 @@ components:
             state.
             `module_store_unavailable` — the module registry could not be
             read or written.
+
+            `invalid_relation_type` — `relation_type` is outside the eight
+            relations the platform defines, in either spelling.
+            `self_relationship` — both relationship endpoints resolve to the
+            same Global ID, after any forward/inverse normalization.
+            `unknown_relationship_endpoint` — a relationship endpoint does not
+            name a Global ID the platform already knows. Never allocated as a
+            side effect of describing a relationship.
+            `relationship_actor_required` — a relationship mutation carried
+            neither a user nor a service actor. Not reachable through the
+            HTTP surface, which always supplies both, but surfaced from the
+            store rather than hidden.
+            `relationship_store_unavailable` — a relationship could not be
+            created, listed or deleted. The summary carries no database
+            detail and a `request_id` instead.
+            `on_behalf_of_required` — a relationship mutation's
+            `X-On-Behalf-Of` header is missing or is not a bearer token.
+            `on_behalf_of_invalid` — `X-On-Behalf-Of` carried a token that
+            failed the same verification a human's own `Authorization` token
+            would undergo.
           enum:
             - upstream_unavailable
             - unsupported_entity_type
@@ -2760,6 +2999,13 @@ components:
             - prompt_too_large
             - too_many_sources
             - ai_unavailable
+            - invalid_relation_type
+            - self_relationship
+            - unknown_relationship_endpoint
+            - relationship_actor_required
+            - relationship_store_unavailable
+            - on_behalf_of_required
+            - on_behalf_of_invalid
         source:
           type: string
           description: The adapter id of the failing upstream, when applicable.
@@ -2996,6 +3242,70 @@ components:
         source_id: {type: string}
         tenant_id: {type: string}
         metadata: {type: object, additionalProperties: true}
+        created_at: {type: string, format: date-time}
+
+    RelationshipRequest:
+      type: object
+      required: [from_global_id, relation_type, to_global_id]
+      properties:
+        from_global_id: {type: string, pattern: "^[A-Z]+-[0-9]+$", example: TST-000012}
+        relation_type:
+          type: string
+          description: |
+            Either spelling of any of the eight relations the platform
+            defines — the forward verb (`tests`) or its inverse
+            (`tested-by`) — normalized to one canonical stored edge.
+          enum:
+            - related-to
+            - tests
+            - tested-by
+            - validates
+            - validated-by
+            - documents
+            - documented-by
+            - implements
+            - implemented-by
+            - depends-on
+            - required-by
+            - blocks
+            - blocked-by
+            - references
+            - referenced-by
+          example: tests
+        to_global_id: {type: string, pattern: "^[A-Z]+-[0-9]+$", example: REQ-000004}
+
+    Relationship:
+      type: object
+      required: [id, from_global_id, relation_type, to_global_id, created_at]
+      description: |
+        A stored edge, always in its canonical forward direction regardless
+        of which spelling created it.
+      properties:
+        id: {type: integer, format: int64}
+        from_global_id: {type: string, pattern: "^[A-Z]+-[0-9]+$"}
+        relation_type: {type: string}
+        to_global_id: {type: string, pattern: "^[A-Z]+-[0-9]+$"}
+        created_by_user_id: {type: string, description: The verified end user this edge was created on behalf of.}
+        created_by_service_id: {type: string, description: The service identity that wrote the row.}
+        created_at: {type: string, format: date-time}
+
+    RelationshipView:
+      type: object
+      required: [global_id, relation_type, direction, created_at]
+      description: |
+        A relationship as seen from one of its endpoints: `relation_type` is
+        whichever of the forward/inverse pair reads correctly from that side,
+        and `global_id` is always the *other* endpoint, never the one that
+        was queried.
+      properties:
+        global_id: {type: string, pattern: "^[A-Z]+-[0-9]+$", description: The other endpoint.}
+        relation_type: {type: string}
+        direction:
+          type: string
+          enum: [outgoing, incoming]
+          description: |
+            `outgoing` when the queried Global ID stored this edge as its
+            `from_global_id`; `incoming` when it is the `to_global_id`.
         created_at: {type: string, format: date-time}
 
     AuditEvent:
