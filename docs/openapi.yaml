@@ -181,7 +181,7 @@ paths:
                 type: array
                 items: {$ref: '#/components/schemas/Module'}
               example:
-                - {id: projects, name: Projects, description: Project and task management, status: available, launch_url: /modules/redmine/, icon: redmine}
+                - {id: projects, name: Projects, description: Project and task management, status: active, launch_url: /modules/redmine/, icon: redmine}
         '401': {$ref: '#/components/responses/Unauthorized'}
         '503': {$ref: '#/components/responses/DependencyUnavailable'}
 
