@@ -7,6 +7,7 @@ dist/
 # command, kept in step by internal/repoguard.
 /mapping-audit
 /server
+/checkhostnames
 .env
 *.log
 coverage.out
