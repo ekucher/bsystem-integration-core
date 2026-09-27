@@ -1,0 +1,28 @@
+title = "BSYSTEM Integration Core gitleaks config"
+
+# Gitleaks' bundled rules are tuned for API-key/token shapes (high entropy,
+# recognizable prefixes like AKIA/ghp_/sk_live_). They do not include a
+# generic "plain human password" detector, so a realistic password sitting in
+# a comment, doc, or config value -- not high-entropy, not key-shaped -- goes
+# undetected by the defaults alone. This extends, rather than replaces, the
+# default ruleset.
+[extend]
+useDefault = true
+
+[[rules]]
+id = "generic-password-assignment"
+description = "Generic password/credential assignment (catches plain human-typed passwords the default rules miss)"
+regex = '''(?i)\b(password|passwd|pwd)\b\s*[:=]\s*['"]?([^\s'"]{6,})['"]?'''
+secretGroup = 2
+tags = ["password", "generic"]
+
+[allowlist]
+description = "Placeholders and documentation examples, not real credentials"
+regexes = [
+  '''(?i)^\$\{.*\}$''',
+  '''(?i)^\$[A-Z_]+$''',
+  '''(?i)^(CHANGE_ME|REPLACE_ME)[A-Z_]*$''',
+  '''(?i)^(your|fake|test|example|placeholder|ci)[-_].*$''',
+  '''(?i)^(none|null|todo)$''',
+  '''^(\*+|x{3,}|X{3,})$''',
+]
