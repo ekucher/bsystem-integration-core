@@ -66,6 +66,9 @@ jobs:
       - name: Static analysis
         run: go run honnef.co/go/tools/cmd/staticcheck@latest ./...
 
+      - name: Check no real hostnames are committed
+        run: go run ./cmd/checkhostnames
+
   openapi:
     name: OpenAPI contract
     runs-on: ubuntu-latest
