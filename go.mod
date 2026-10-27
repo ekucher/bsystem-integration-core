@@ -4,7 +4,7 @@ go 1.26.8
 
 require (
 	github.com/jackc/pgx/v5 v5.11.0
-	github.com/nats-io/nats.go v1.54.0
+	github.com/nats-io/nats.go v1.55.0
 	gopkg.in/yaml.v3 v3.0.1
 )
 
